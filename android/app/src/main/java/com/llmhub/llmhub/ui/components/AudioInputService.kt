@@ -30,6 +30,8 @@ class AudioInputService(private val context: Context) {
     private var isRecording = false
     private var recordingThread: Thread? = null
     private var recordingStartTime: Long = 0
+    @Volatile
+    private var captureHadSpeech: Boolean = false
     var maxRecordingReached: Boolean = false
         private set
     
@@ -39,6 +41,10 @@ class AudioInputService(private val context: Context) {
     // Expose elapsed time as a flow for UI updates
     private val _elapsedTimeMs = MutableStateFlow(0L)
     val elapsedTimeMs: StateFlow<Long> = _elapsedTimeMs.asStateFlow()
+
+    // Expose normalized live mic level (0f..1f) for waveform/reactive UI.
+    private val _audioLevel = MutableStateFlow(0f)
+    val audioLevel: StateFlow<Float> = _audioLevel.asStateFlow()
     
     // Callback for when recording stops automatically
     var onRecordingAutoStopped: (() -> Unit)? = null
@@ -50,6 +56,10 @@ class AudioInputService(private val context: Context) {
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT // 16-bit PCM
         private val BUFFER_SIZE = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
         private const val MAX_RECORDING_DURATION_MS = 29500L // 29.5 seconds
+        private const val SPEECH_START_THRESHOLD = 0.075f
+        private const val SILENCE_THRESHOLD = 0.030f
+        private const val SILENCE_STOP_DURATION_MS = 1150L
+        private const val MIN_ACTIVE_SPEECH_MS = 450L
     }
     
     /**
@@ -86,7 +96,7 @@ class AudioInputService(private val context: Context) {
             
             // Initialize AudioRecord for mono PCM recording (MediaPipe expects raw 16-bit PCM)
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 SAMPLE_RATE,
                 CHANNEL_CONFIG,
                 AUDIO_FORMAT,
@@ -104,7 +114,9 @@ class AudioInputService(private val context: Context) {
             
             // Reset max recording flag and record start time
             maxRecordingReached = false
+            captureHadSpeech = false
             recordingStartTime = System.currentTimeMillis()
+            _audioLevel.value = 0f
             
             // Start recording thread
             recordingThread = Thread {
@@ -151,11 +163,21 @@ class AudioInputService(private val context: Context) {
             val pcmData = pcmStream.toByteArray() // raw PCM16
             Log.d(TAG, "Stopped recording, PCM16 size: ${pcmData.size} bytes")
 
+            if (!captureHadSpeech) {
+                Log.d(TAG, "Discarding capture because no speech was detected")
+                pcmStream.reset()
+                _audioLevel.value = 0f
+                outputFile?.delete()
+                outputFile = null
+                return@withContext null
+            }
+
             // Convert PCM16 to float32 WAV (MediaPipe requirement)
             val float32Wav = convertPcm16ToFloat32Wav(pcmData)
 
             // Clear PCM buffer for next recording
             pcmStream.reset()
+            _audioLevel.value = 0f
 
             // Cleanup temp WAV file
             outputFile?.delete()
@@ -187,7 +209,9 @@ class AudioInputService(private val context: Context) {
             isRecording = false
             maxRecordingReached = false
             recordingStartTime = 0
+            captureHadSpeech = false
             _elapsedTimeMs.value = 0L
+            _audioLevel.value = 0f
             audioRecord?.apply {
                 if (state == AudioRecord.STATE_INITIALIZED) {
                     stop()
@@ -212,9 +236,17 @@ class AudioInputService(private val context: Context) {
     private fun writeAudioDataToFile() {
         val data = ByteArray(BUFFER_SIZE)
         var output: FileOutputStream? = null
+        val outputTarget = outputFile
+        if (outputTarget == null) {
+            Log.e(TAG, "Recording output file is null before capture starts")
+            return
+        }
+        var hasSpeechStarted = false
+        var firstSpeechAtMs = 0L
+        var lastSpeechAtMs = 0L
         
         try {
-            output = FileOutputStream(outputFile)
+            output = FileOutputStream(outputTarget)
             
             // Write WAV header (we'll update it later with actual data size)
             writeWavHeader(output, SAMPLE_RATE, 1, 16, 0) // 0 data size initially
@@ -239,6 +271,34 @@ class AudioInputService(private val context: Context) {
                 
                 val bytesRead = audioRecord?.read(data, 0, BUFFER_SIZE) ?: 0
                 if (bytesRead > 0) {
+                    val level = calculateNormalizedAudioLevel(data, bytesRead)
+                    _audioLevel.value = level
+
+                    val now = System.currentTimeMillis()
+                    if (!hasSpeechStarted) {
+                        if (level >= SPEECH_START_THRESHOLD) {
+                            hasSpeechStarted = true
+                            captureHadSpeech = true
+                            firstSpeechAtMs = now
+                            lastSpeechAtMs = now
+                        }
+                    } else {
+                        if (level >= SILENCE_THRESHOLD) {
+                            lastSpeechAtMs = now
+                        } else {
+                            val speechAgeMs = now - firstSpeechAtMs
+                            val silenceMs = now - lastSpeechAtMs
+                            if (speechAgeMs >= MIN_ACTIVE_SPEECH_MS && silenceMs >= SILENCE_STOP_DURATION_MS) {
+                                Log.d(TAG, "Detected end of speech (silence ${silenceMs}ms), auto-stopping recording")
+                                isRecording = false
+                                serviceScope.launch {
+                                    onRecordingAutoStopped?.invoke()
+                                }
+                                break
+                            }
+                        }
+                    }
+
                     // Write raw PCM to in-memory buffer for MediaPipe
                     pcmStream.write(data, 0, bytesRead)
 
@@ -251,13 +311,35 @@ class AudioInputService(private val context: Context) {
             output.close()
             
             // Update WAV header with actual data size
-            updateWavHeader(outputFile!!, totalDataSize)
+            updateWavHeader(outputTarget, totalDataSize)
             
         } catch (e: IOException) {
             Log.e(TAG, "Error writing audio data", e)
         } finally {
+            _audioLevel.value = 0f
             output?.close()
         }
+    }
+
+    private fun calculateNormalizedAudioLevel(buffer: ByteArray, bytesRead: Int): Float {
+        if (bytesRead < 2) return 0f
+
+        var sumSquares = 0.0
+        var sampleCount = 0
+        var i = 0
+        while (i + 1 < bytesRead) {
+            val sample = ((buffer[i + 1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)).toShort().toInt()
+            val normalized = sample / 32768.0
+            sumSquares += normalized * normalized
+            sampleCount++
+            i += 2
+        }
+
+        if (sampleCount == 0) return 0f
+        val rms = kotlin.math.sqrt(sumSquares / sampleCount)
+
+        // Lightly boost conversational speech to make UI response visible.
+        return (rms * 4.8).toFloat().coerceIn(0f, 1f)
     }
     
     /**

@@ -769,7 +769,7 @@
     <string name="gpu_not_supported">GPU not supported by this model</string>
     <string name="load_model">Load Model</string>
     <string name="model_loaded">Model loaded successfully</string>
-    <string name="model_loading">Loading modelâ€¦</string>
+    <string name="model_loading">Loading model</string>
     <string name="model_load_failed">Failed to load model</string>
     <string name="multimodal_models_only">Only multimodal (Gemma-3n) models supported</string>
     <string name="text_models_only">Text-only models supported</string>

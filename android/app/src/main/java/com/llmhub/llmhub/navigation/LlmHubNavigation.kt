@@ -36,6 +36,7 @@ sealed class Screen(val route: String) {
     object ScamDetector : Screen("scam_detector")
     object ImageGenerator : Screen("image_generator")
     object VibeCoder : Screen("vibe_coder")
+    object VibeVoice : Screen("vibevoice")
     object CodeCanvas : Screen("code_canvas") {
         fun createRoute(codeContent: String, codeType: String = "html") =
             "code_canvas?code=${android.net.Uri.encode(codeContent)}&type=$codeType"
@@ -105,6 +106,7 @@ fun LlmHubNavigation(
                         "image_generator" -> navigateIfPremium(Screen.ImageGenerator.route)
                         "vibe_coder" -> navigateIfPremium(Screen.VibeCoder.route)
                         "creator_generation" -> navController.navigate(Screen.CreatorGeneration.route)
+                        "vibevoice" -> navController.navigate(Screen.VibeVoice.route)
                     }
                 },
                 onNavigateToSettings = {
@@ -231,6 +233,13 @@ fun LlmHubNavigation(
                 onNavigateToCanvas = { code, type ->
                     navController.navigate(Screen.CodeCanvas.createRoute(code, type))
                 }
+            )
+        }
+
+        composable(Screen.VibeVoice.route) {
+            VibeVoiceScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToModels = { navController.navigate(Screen.Models.route) }
             )
         }
         

@@ -18,11 +18,6 @@
                 <DeviceId pluginId="PhysicalDevice" identifier="serial=R52X70162PV" />
               </handle>
             </Target>
-            <Target type="DEFAULT_BOOT">
-              <handle>
-                <DeviceId pluginId="LocalEmulator" identifier="path=C:\Users\timmy\.android\avd\Pixel_9_Pro_2.avd" />
-              </handle>
-            </Target>
           </targets>
         </DialogSelection>
       </SelectionState>
