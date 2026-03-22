@@ -28,6 +28,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var themeViewModel: ThemeViewModel
     
     override fun onCreate(savedInstanceState: Bundle?) {
+        android.util.Log.e("MainActivity", "================ APP STARTED ================")
         super.onCreate(savedInstanceState)
 
         val app = application as LlmHubApplication

@@ -576,9 +576,15 @@ class NexaInferenceService @Inject constructor(
          }
     }
 
-    override suspend fun generateResponse(prompt: String, model: LLMModel): String {
+    override suspend fun generateResponse(prompt: String, model: LLMModel, images: List<Bitmap>): String {
          val sb = StringBuilder()
          generateResponseStream(prompt, model).collect { sb.append(it) }
+         return sb.toString()
+    }
+
+    override suspend fun generateResponseWithSession(prompt: String, model: LLMModel, chatId: String, images: List<Bitmap>): String {
+         val sb = StringBuilder()
+         generateResponseStreamWithSession(prompt, model, chatId, images).collect { sb.append(it) }
          return sb.toString()
     }
 
@@ -1460,6 +1466,9 @@ class NexaInferenceService @Inject constructor(
     }
     override fun isVisionCurrentlyDisabled(): Boolean = currentVisionDisabled
     override fun isAudioCurrentlyDisabled(): Boolean = currentAudioDisabled
-    override fun isGpuBackendEnabled(): Boolean = currentPreferredBackend == LlmInference.Backend.GPU
+    override fun isGpuBackendEnabled(): Boolean {
+        // Return true if using either GPU or NPU (HTP)
+        return currentPreferredBackend == LlmInference.Backend.GPU
+    }
     override fun getEffectiveMaxTokens(model: LLMModel): Int = overrideMaxTokens ?: model.contextWindowSize
 }

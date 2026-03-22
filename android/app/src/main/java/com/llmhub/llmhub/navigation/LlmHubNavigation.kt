@@ -47,6 +47,10 @@ sealed class Screen(val route: String) {
     object Terms : Screen("terms")
     object CreatorGeneration : Screen("creator_generation")
     object Premium : Screen("premium")
+    object Benchmark : Screen("benchmark")
+    object BrowserAgent : Screen("browser_agent")
+    object GitHubAgent : Screen("github_agent")
+    object GitHubAuth : Screen("github_auth")
 }
 
 @Composable
@@ -107,6 +111,8 @@ fun LlmHubNavigation(
                         "vibe_coder" -> navigateIfPremium(Screen.VibeCoder.route)
                         "creator_generation" -> navController.navigate(Screen.CreatorGeneration.route)
                         "vibevoice" -> navController.navigate(Screen.VibeVoice.route)
+                        "browser_agent" -> navController.navigate(Screen.BrowserAgent.route)
+                        "github_agent" -> navController.navigate(Screen.GitHubAgent.route)
                     }
                 },
                 onNavigateToSettings = {
@@ -277,6 +283,9 @@ fun LlmHubNavigation(
                 onNavigateToPremium = {
                     navController.navigate(Screen.Premium.route)
                 },
+                onNavigateToBenchmark = {
+                    navController.navigate(Screen.Benchmark.route)
+                },
                 themeViewModel = themeViewModel
             )
         }
@@ -325,6 +334,41 @@ fun LlmHubNavigation(
         composable(Screen.Premium.route) {
             PremiumScreen(
                 onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(Screen.Benchmark.route) {
+            val benchmarkViewModel: com.llmhub.llmhub.viewmodels.BenchmarkViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+                factory = chatViewModelFactory
+            )
+            BenchmarkScreen(
+                viewModel = benchmarkViewModel,
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(Screen.BrowserAgent.route) {
+            BrowserAgentScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToModels = { navController.navigate(Screen.Models.route) }
+            )
+        }
+
+        composable(Screen.GitHubAuth.route) {
+            GitHubAuthScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onAuthComplete = {
+                    navController.popBackStack()
+                    navController.navigate(Screen.GitHubAgent.route)
+                }
+            )
+        }
+
+        composable(Screen.GitHubAgent.route) {
+            GitHubAgentScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToAuth = { navController.navigate(Screen.GitHubAuth.route) },
+                onNavigateToModels = { navController.navigate(Screen.Models.route) }
             )
         }
     }

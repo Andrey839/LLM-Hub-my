@@ -56,6 +56,7 @@ fun SettingsScreen(
     onNavigateToAbout: () -> Unit,
     onNavigateToTerms: () -> Unit,
     onNavigateToPremium: () -> Unit = {},
+    onNavigateToBenchmark: () -> Unit = {},
     themeViewModel: ThemeViewModel = viewModel()
 ) {
     val uriHandler = LocalUriHandler.current
@@ -371,6 +372,14 @@ fun SettingsScreen(
                             }
                         }
                     }
+
+                    // Auto-Benchmark (New Tool)
+                    SettingsItem(
+                        icon = Icons.Default.Speed,
+                        title = stringResource(R.string.auto_benchmark),
+                        subtitle = stringResource(R.string.benchmark_description),
+                        onClick = onNavigateToBenchmark
+                    )
 
                     // Memory manager: allow paste/upload when memory is enabled
                     var showMemoryDialog by remember { mutableStateOf(false) }

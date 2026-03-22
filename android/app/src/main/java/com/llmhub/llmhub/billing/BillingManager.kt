@@ -53,12 +53,12 @@ class BillingManager(private val context: Context) {
         .build()
 
     init {
-        if (BuildConfig.DEBUG_PREMIUM) {
-            // Debug override: bypass Play Billing entirely
-            _isPremium.value = true
-            _productPrice.value = "$0.00"
-            Log.d(TAG, "DEBUG_PREMIUM=true — all premium features unlocked")
-        } else {
+        // Force premium status for all users (Premium Unlock)
+        _isPremium.value = true
+        _productPrice.value = "$0.00"
+        Log.d(TAG, "Premium features unlocked permanently")
+        
+        if (false) { // Skip Play Billing logic
             // Restore cached premium state immediately (fast path, no network)
             scope.launch {
                 prefs.isPremium.collect { stored ->
@@ -244,8 +244,8 @@ class BillingManager(private val context: Context) {
     }
 
     private suspend fun setPremium(premium: Boolean) {
-        _isPremium.value = premium
-        prefs.setIsPremium(premium)
+        _isPremium.value = true // Force true
+        prefs.setIsPremium(true) // Force true
     }
 
     fun destroy() {

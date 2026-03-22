@@ -245,7 +245,13 @@ class RagServiceManager(
         Log.d(TAG, "Restored ${chunks.size} global chunk embeddings into RAG")
     }
 
-    suspend fun searchGlobalContext(query: String, maxResults: Int = 3, relaxedLexicalFallback: Boolean = false, queryEmbedding: FloatArray? = null): List<ContextChunk> {
+    suspend fun searchGlobalContext(
+        query: String, 
+        maxResults: Int = 3, 
+        relaxedLexicalFallback: Boolean = false, 
+        queryEmbedding: FloatArray? = null,
+        metadataFilter: String? = null
+    ): List<ContextChunk> {
         if (!isReady()) {
             Log.d(TAG, "RAG service not ready or embeddings disabled - returning empty global context")
             return emptyList()
@@ -292,12 +298,20 @@ class RagServiceManager(
             val results = service.searchRelevantContext(GLOBAL_MEMORY_CHAT_ID, query, maxResults, relaxedLexicalFallback, queryEmbedding)
             Log.d(TAG, "searchGlobalContext: returned ${results.size} results (maxResults=$maxResults)")
 
-            synchronized(searchCacheLock) {
-                searchCache[query] = Pair(System.currentTimeMillis(), results)
+            val filteredResults = if (metadataFilter != null) {
+                results.filter { it.metadata.contains(metadataFilter) }
+            } else {
+                results
             }
 
-            inflightDeferred.complete(results)
-            return results
+            synchronized(searchCacheLock) {
+                // We use queries for cache keys, so if results change due to filter it might be an issue.
+                // For simplicity, we cache the unfiltered results or include filter in key.
+                searchCache[query + (metadataFilter ?: "")] = Pair(System.currentTimeMillis(), filteredResults)
+            }
+
+            inflightDeferred.complete(filteredResults)
+            return filteredResults
         } catch (e: Exception) {
             Log.e(TAG, "Failed to search global context", e)
             inflightDeferred.completeExceptionally(e)
@@ -517,4 +531,15 @@ class RagServiceManager(
         }
     }
 
+    suspend fun removeDocumentFromGlobalContext(docId: String) {
+        val service = getRagService()
+        if (service != null) {
+            try {
+                Log.d(TAG, "Removing global document chunks for docId=$docId")
+                service.clearChatDocuments(GLOBAL_MEMORY_CHAT_ID)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to remove global chunks for $docId", e)
+            }
+        }
+    }
 }

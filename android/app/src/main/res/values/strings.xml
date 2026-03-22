@@ -1,4 +1,4 @@
-﻿<resources>
+<resources>
     <string name="app_name">LLM Hub</string>
     
     <!-- Common -->
@@ -462,6 +462,10 @@
     <string name="feature_vibe_coder_desc">Generate HTML, JavaScript, and Python code with AI</string>
     <string name="feature_creator_generation">creAItors</string>
     <string name="feature_creator_generation_desc">Create your own custom AI personas</string>
+    <string name="feature_browser_agent">Browser Agent</string>
+    <string name="feature_browser_agent_desc">Interactive web browsing and task automation with AI</string>
+    <string name="feature_github_agent">GitHub Agent</string>
+    <string name="feature_github_agent_desc">Manage repositories and edit code with AI</string>
     <string name="drawer_my_creators">my creAItors</string>
 
     <!-- Premium / IAP -->
@@ -840,6 +844,16 @@
     <string name="feature_vibevoice">VibeVoice</string>
     <string name="feature_vibevoice_desc">Voice chat with AI locally</string>
     <string name="chat_now">Chat Now</string>
+
+    <!-- Auto-Benchmark -->
+    <string name="auto_benchmark">Auto-Benchmark</string>
+    <string name="benchmark_description">Measure LLM performance (TPS, TTFT) across backends</string>
+    <string name="select_models_to_test">Select models to test:</string>
+    <string name="start_benchmark">Start Benchmark</string>
+    <string name="no_models_found_benchmark">No downloaded models found for benchmarking.</string>
+    <string name="testing_model_on_backend">Testing %1$s on %2$s...</string>
+    <string name="benchmark_complete">Benchmark Complete</string>
+    <string name="results_label">Results</string>
 </resources>
 
 

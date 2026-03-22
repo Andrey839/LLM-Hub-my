@@ -15,6 +15,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -26,13 +27,18 @@ android {
         minSdk = 27
         targetSdk = 36
         versionCode = 87
-        versionName = "3.6.3"
+        versionName = "3.7.0-REPO-MANAGER"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         val hfToken: String = localProperties.getProperty("HF_TOKEN", "")
         buildConfigField("String", "HF_TOKEN", "\"$hfToken\"")
         val debugPremium: Boolean = localProperties.getProperty("DEBUG_PREMIUM", "false").toBoolean()
         buildConfigField("Boolean", "DEBUG_PREMIUM", "$debugPremium")
+        
+        val githubClientId: String = localProperties.getProperty("GITHUB_CLIENT_ID", "Ov23lik93Z6G62e8l7e2") // Placeholder
+        val githubClientSecret: String = localProperties.getProperty("GITHUB_CLIENT_SECRET", "")
+        buildConfigField("String", "GITHUB_CLIENT_ID", "\"$githubClientId\"")
+        buildConfigField("String", "GITHUB_CLIENT_SECRET", "\"$githubClientSecret\"")
 
         // AdMob IDs — override in local.properties; test IDs are the defaults
         val admobAppId: String = localProperties.getProperty(
@@ -137,6 +143,8 @@ android {
             pickFirsts += setOf("**/libonnxruntime.so")
             // Exclude DeepSeek OCR library to avoid 16KB page alignment issues
             excludes += setOf("**/libdeepseek-ocr.so")
+            // Pick first for all QNN libraries to avoid duplicates from different SDKs (ONNX vs Nexa)
+            pickFirsts += setOf("**/libQnn*.so")
             // Exclude Nexa SDK's bundled stable-diffusion — app uses its own libstable_diffusion_core.so subprocess
             excludes += setOf("**/libstable-diffusion.so")
         }
@@ -162,7 +170,9 @@ configurations.all {
     resolutionStrategy {
         force("com.google.protobuf:protobuf-java:3.25.1")
         // Force Microsoft's ONNX Runtime version to win over any version Nexa SDK pulls in
-        force("com.microsoft.onnxruntime:onnxruntime-android:1.24.1")
+        // Force Microsoft's ONNX Runtime QNN version to win over any version Nexa SDK pulls in
+        // QNN version is required for Qualcomm NPU acceleration on Snapdragon 8 Gen 2+
+        force("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.24.1")
     }
     // Exclude protobuf-javalite from all dependencies to prevent duplicate classes
     exclude(group = "com.google.protobuf", module = "protobuf-javalite")
@@ -224,6 +234,10 @@ dependencies {
     // JSON
     implementation(libs.gson)
     
+    // Git integration
+    implementation(libs.jgit)
+    implementation(libs.jsch)
+    
     // Document and text file parsing
     implementation("org.apache.commons:commons-csv:1.10.0")
     
@@ -234,6 +248,7 @@ dependencies {
     implementation("io.ktor:ktor-client-android:2.3.6")
     implementation("io.ktor:ktor-client-content-negotiation:2.3.6")
     implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.6")
+    implementation(libs.kotlinx.serialization.json)
     
     // OkHttp for SD backend communication
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
@@ -261,8 +276,8 @@ dependencies {
     // Markdown parser for extracting code blocks
     implementation("com.vladsch.flexmark:flexmark-all:0.64.8")
 
-    // ONNX Runtime for Android - supports ONNX model inference
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.24.1")
+    // ONNX Runtime for Android (QNN version) - supports ONNX model inference with NPU acceleration
+    implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.24.1")
 
     // Nexa SDK for GGUF model support
     // Nexa bundles libonnxruntime.so directly in its AAR (6.5MB) which conflicts with

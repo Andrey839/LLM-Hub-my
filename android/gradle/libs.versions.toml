@@ -19,6 +19,9 @@ accompanistPermissions = "0.32.0"
 coilCompose = "2.5.0"
 gson = "2.10.1"
 materialIconsExtended = "1.6.8"
+jgit = "6.8.0.202311291450-r"
+jsch = "0.2.16"
+kotlinxSerialization = "1.6.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -67,9 +70,13 @@ gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 
 # Material Icons Extended
 androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "materialIconsExtended" }
+jgit = { group = "org.eclipse.jgit", name = "org.eclipse.jgit", version.ref = "jgit" }
+jsch = { group = "com.github.mwiede", name = "jsch", version.ref = "jsch" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

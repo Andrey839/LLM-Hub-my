@@ -37,8 +37,9 @@ object DeviceInfo {
     }
     
     fun isQualcommNpuSupported(): Boolean {
-        // App policy: expose GGUF NPU option on 8 Gen 4 and 8 Gen 5 class devices.
-        return getChipsetSuffix() in setOf("8gen4", "8gen5")
+        // App policy: expose GGUF NPU option on 8 Gen 2, 3, 4 and 8 Gen 5 class devices.
+        // Libraries for HTP v69/v73/v75 are present in qnn_pack and nexa_npu_pack.
+        return getChipsetSuffix() in setOf("8gen2", "8gen3", "8gen4", "8gen5")
     }
 
     /**
@@ -1197,7 +1198,7 @@ object ModelData {
             sizeBytes = 1771510908L, // model_q8.onnx + model_q8.onnx_data + tokenizer.json + tokenizer_config.json (HF API)
             source = "LiquidAI",
             supportsVision = false,
-            supportsGpu = false,
+            supportsGpu = true,
             requirements = ModelRequirements(minRamGB = 3, recommendedRamGB = 5),
             contextWindowSize = 128000,
             modelFormat = "onnx",
@@ -1217,7 +1218,7 @@ object ModelData {
             sizeBytes = 853542627L, // model_q4.onnx + model_q4.onnx_data + tokenizer.json + tokenizer_config.json (HF API)
             source = "LiquidAI",
             supportsVision = false,
-            supportsGpu = false,
+            supportsGpu = true,
             requirements = ModelRequirements(minRamGB = 2, recommendedRamGB = 4),
             contextWindowSize = 128000,
             modelFormat = "onnx",
@@ -1235,7 +1236,7 @@ object ModelData {
             sizeBytes = 1771510908L, // model_q8.onnx + model_q8.onnx_data + tokenizer.json + tokenizer_config.json (HF API)
             source = "LiquidAI",
             supportsVision = false,
-            supportsGpu = false,
+            supportsGpu = true,
             requirements = ModelRequirements(minRamGB = 3, recommendedRamGB = 5),
             contextWindowSize = 128000,
             modelFormat = "onnx",
@@ -1437,7 +1438,7 @@ object ModelData {
             sizeBytes = 3367933870L, // decoder_q4 + decoder_data x2 + embed_fp16 + vision_q4 + config + tokenizer (HF API)
             source = "MistralAI",
             supportsVision = true,
-            supportsGpu = false,
+            supportsGpu = true,
             requirements = ModelRequirements(minRamGB = 4, recommendedRamGB = 6),
             contextWindowSize = 32768,
             modelFormat = "onnx",
@@ -1461,7 +1462,7 @@ object ModelData {
             sizeBytes = 3007199181L, // decoder_q4f16 + decoder_data + embed_fp16 + vision_q4 + config + tokenizer (HF API)
             source = "MistralAI",
             supportsVision = true,
-            supportsGpu = false,
+            supportsGpu = true,
             requirements = ModelRequirements(minRamGB = 4, recommendedRamGB = 6),
             contextWindowSize = 32768,
             modelFormat = "onnx",

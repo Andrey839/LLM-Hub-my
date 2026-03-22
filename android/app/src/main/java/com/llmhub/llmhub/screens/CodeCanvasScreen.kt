@@ -16,6 +16,7 @@ import com.llmhub.llmhub.R
 import androidx.compose.ui.viewinterop.AndroidView
 import android.webkit.WebViewClient
 import android.util.Log
+import com.llmhub.llmhub.utils.WebBridge
 
 /**
  * CodeCanvasScreen displays generated HTML/JavaScript code in a WebView.
@@ -120,6 +121,9 @@ fun CodeCanvasScreen(
                             }
                         }
                         
+                        // Add the secure bridge
+                        addJavascriptInterface(WebBridge(context), "AndroidNative")
+                        
                         // Sanitize and load HTML content
                         try {
                             val sanitizedHtml = sanitizeHtml(codeContent)
@@ -181,6 +185,32 @@ private fun sanitizeHtml(htmlContent: String): String {
         } else {
             initScript + sanitized
         }
+    }
+    
+    // Inject the Device Bridge Polyfill
+    val bridgePolyfill = """
+        <script>
+        (function() {
+            window.device = {
+                showToast: function(msg) { if(window.AndroidNative) AndroidNative.showToast(msg); },
+                vibrate: function(ms) { if(window.AndroidNative) AndroidNative.vibrate(ms || 50); },
+                getInfo: function() { return window.AndroidNative ? JSON.parse(AndroidNative.getDeviceInfo()) : {}; },
+                getBattery: function() { return window.AndroidNative ? JSON.parse(AndroidNative.getBatteryStatus()) : {level:-1, isCharging:false}; },
+                setFlashlight: function(on) { if(window.AndroidNative) AndroidNative.toggleFlashlight(on); },
+                copy: function(text) { if(window.AndroidNative) AndroidNative.copyToClipboard(text); }
+            };
+            // Legacy aliases for common LLM hallucinations
+            window.android = window.device;
+            window.native = window.device;
+        })();
+        </script>
+    """.trimIndent()
+
+    // Inject before closing </head> or at the beginning
+    sanitized = if (sanitized.contains("</head>", ignoreCase = true)) {
+        sanitized.replaceFirst("</head>", bridgePolyfill + "</head>")
+    } else {
+        bridgePolyfill + sanitized
     }
     
     // Wrap in HTML structure if not present

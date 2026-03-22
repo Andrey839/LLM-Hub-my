@@ -78,6 +78,9 @@ class ChatViewModel(
 
     private val _currentlyLoadedModel = MutableStateFlow<LLMModel?>(null)
     val currentlyLoadedModel: StateFlow<LLMModel?> = _currentlyLoadedModel.asStateFlow()
+    
+    val isModelLoaded: StateFlow<Boolean> = _currentlyLoadedModel.map { it != null }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     // Model the user has selected (may be in the process of loading). Use this for immediate UI feedback.
     private val _selectedModel = MutableStateFlow<LLMModel?>(null)
     val selectedModel: StateFlow<LLMModel?> = _selectedModel.asStateFlow()
@@ -349,6 +352,27 @@ class ChatViewModel(
         saveChatSettings()
     }
 
+    fun loadModel() {
+        val model = _selectedModel.value ?: return
+        val backend = _selectedBackend.value ?: LlmInference.Backend.GPU
+        val deviceId = _selectedNpuDeviceId.value
+        
+        _isLoadingModel.value = true
+        viewModelScope.launch {
+            try {
+                val success = inferenceService.loadModel(model, backend, isVisionDisabled, isAudioDisabled, deviceId)
+                if (success) {
+                    _currentlyLoadedModel.value = model
+                    currentModel = model
+                }
+            } catch (e: Exception) {
+                Log.e("ChatViewModel", "Failed to load model: ${e.message}")
+            } finally {
+                _isLoadingModel.value = false
+            }
+        }
+    }
+
     private var isGenerating = false
         get() = savedStateHandle.get<Boolean>(KEY_IS_GENERATING) ?: false
         set(value) {
@@ -419,6 +443,18 @@ class ChatViewModel(
                     _isLoading.value = false
                     _isLoadingModel.value = false
                 }
+            }
+        }
+    }
+
+    fun refreshModels(context: Context) {
+        viewModelScope.launch {
+            try {
+                val downloaded = com.llmhub.llmhub.data.ModelAvailabilityProvider.loadAvailableModels(context)
+                _availableModels.value = downloaded
+                Log.d("ChatViewModel", "Refreshed available models: ${downloaded.size} found")
+            } catch (e: Exception) {
+                Log.e("ChatViewModel", "Error refreshing models: ${e.message}")
             }
         }
     }

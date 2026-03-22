@@ -6,6 +6,9 @@ import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.unit.dp
 import com.google.android.gms.ads.*
 import com.google.android.gms.ads.interstitial.InterstitialAd
 import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
@@ -28,17 +31,8 @@ object AdManager {
  */
 @Composable
 fun BannerAd(modifier: Modifier = Modifier) {
-    AndroidView(
-        modifier = modifier,
-        factory = { context ->
-            AdView(context).apply {
-                setAdSize(AdSize.BANNER)
-                adUnitId = BuildConfig.ADMOB_BANNER_ID
-                loadAd(AdRequest.Builder().build())
-            }
-        }
-        // No update block — ad loads once; avoid wasting impressions on recompositions
-    )
+    // Ad-Free: Banner ad disabled
+    Spacer(modifier = modifier.size(0.dp))
 }
 
 /**
@@ -81,21 +75,8 @@ class InterstitialAdManager(
      * The ad will be shown on every [showEveryN]th call.
      */
     fun onNewChatStarted(activity: Activity) {
-        eventCount++
-        if (eventCount % showEveryN == 0 && interstitialAd != null) {
-            interstitialAd?.fullScreenContentCallback = object : FullScreenContentCallback() {
-                override fun onAdDismissedFullScreenContent() {
-                    interstitialAd = null
-                    loadAd() // pre-load the next one
-                }
-
-                override fun onAdFailedToShowFullScreenContent(error: AdError) {
-                    interstitialAd = null
-                    loadAd()
-                }
-            }
-            interstitialAd?.show(activity)
-        }
+        // Ad-Free: Interstitials disabled
+        return
     }
 }
 
@@ -136,25 +117,7 @@ class RewardedAdManager(private val context: Context) {
      * If no ad is available, [onGranted] is called immediately (never block the user).
      */
     fun showAdOrGrant(activity: Activity, onGranted: () -> Unit) {
-        val ad = rewardedAd
-        if (ad == null) {
-            // No ad ready — grant immediately and try to load for next time
-            onGranted()
-            loadAd()
-            return
-        }
-        ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-            override fun onAdDismissedFullScreenContent() {
-                rewardedAd = null
-                loadAd()
-            }
-
-            override fun onAdFailedToShowFullScreenContent(error: AdError) {
-                rewardedAd = null
-                loadAd()
-                onGranted() // fallback — don't punish user for ad failure
-            }
-        }
-        ad.show(activity) { /* RewardItem */ onGranted() }
+        // Ad-Free: Rewarded ads disabled, grant reward instantly
+        onGranted()
     }
 }

@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.platform.LocalContext
 import com.llmhub.llmhub.ads.BannerAd
 import com.llmhub.llmhub.data.ThemePreferences
+import com.llmhub.llmhub.ui.components.GlassySurface
 
 data class FeatureCard(
     val title: Int,
@@ -133,13 +134,27 @@ fun HomeScreen(
                 icon = Icons.Filled.GraphicEq,
                 gradient = Pair(Color(0xFF7BC6CC), Color(0xFF8A82FB)),
                 route = "vibevoice"
+            ),
+            FeatureCard(
+                title = R.string.feature_browser_agent,
+                description = R.string.feature_browser_agent_desc,
+                icon = Icons.Filled.Web,
+                gradient = Pair(Color(0xFF00c6ff), Color(0xFF0072ff)),
+                route = "browser_agent"
+            ),
+            FeatureCard(
+                title = R.string.feature_github_agent,
+                description = R.string.feature_github_agent_desc,
+                icon = Icons.Filled.Code,
+                gradient = Pair(Color(0xFF8E2DE2), Color(0xFF4A00E0)),
+                route = "github_agent"
             )
         )
     }
 
     val aiChatFeature = features.first { it.route == "chat" }
     val toolsFeatures = features.filter { it.route in setOf("writing_aid", "translator", "transcriber", "image_generator") }
-    val utilityFeatures = features.filter { it.route in setOf("scam_detector", "vibe_coder", "creator_generation", "vibevoice") }
+    val utilityFeatures = features.filter { it.route in setOf("scam_detector", "vibe_coder", "creator_generation", "vibevoice", "browser_agent", "github_agent") }
     
     Scaffold(
         topBar = {
@@ -237,16 +252,7 @@ fun HomeScreen(
                         )
                     }
 
-                    // Go Premium button (only for free users)
-                    if (!isPremium) {
-                        IconButton(onClick = onNavigateToPremium) {
-                            Icon(
-                                imageVector = Icons.Default.WorkspacePremium,
-                                contentDescription = stringResource(R.string.premium_go_premium),
-                                tint = Color(0xFFFFD700)
-                            )
-                        }
-                    }
+                    // Go Premium button removed (Premium Unlocked)
                     
                     // Settings Button
                     IconButton(onClick = onNavigateToSettings) {
@@ -409,11 +415,7 @@ fun HomeScreen(
                     }
                 }
 
-                if (!isPremium && !isLandscapeLayout) {
-                    item {
-                        BannerAd(modifier = Modifier.fillMaxWidth())
-                    }
-                }
+                // item { BannerAd(modifier = Modifier.fillMaxWidth()) } // Ads disabled
 
                 item { Spacer(modifier = Modifier.height(6.dp)) }
             }
@@ -429,13 +431,12 @@ private fun HomeHeroCard(
     isLocked: Boolean,
     onClick: () -> Unit
 ) {
-    Card(
+    GlassySurface(
         modifier = Modifier
             .fillMaxWidth()
             .height(cardHeight)
             .clickable { onClick() },
-        shape = RoundedCornerShape(28.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+        cornerRadius = 28.dp
     ) {
         Box(
             modifier = Modifier
@@ -443,8 +444,8 @@ private fun HomeHeroCard(
                 .background(
                     Brush.linearGradient(
                         colors = listOf(
-                            feature.gradient.first.copy(alpha = if (isLocked) 0.45f else 1f),
-                            feature.gradient.second.copy(alpha = if (isLocked) 0.45f else 1f)
+                            feature.gradient.first.copy(alpha = 0.7f),
+                            feature.gradient.second.copy(alpha = 0.7f)
                         )
                     )
                 )
@@ -510,23 +511,7 @@ private fun HomeHeroCard(
                     .size(if (compact) 72.dp else 120.dp)
             )
 
-            if (isLocked) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .clip(RoundedCornerShape(bottomStart = 10.dp))
-                        .background(Color(0xFFFFD700))
-                        .padding(horizontal = 6.dp, vertical = 3.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Lock,
-                        contentDescription = stringResource(R.string.premium_locked_feature),
-                        tint = Color(0xFF1A0533),
-                        modifier = Modifier.size(14.dp)
-                    )
-                }
-            }
+            // Lock badge removed (Premium Unlocked)
         }
     }
 }
@@ -539,13 +524,12 @@ private fun SmallFeatureCard(
     isLocked: Boolean,
     onClick: () -> Unit
 ) {
-    Card(
+    GlassySurface(
         modifier = Modifier
             .fillMaxWidth()
             .height(cardHeight)
             .clickable { onClick() },
-        shape = RoundedCornerShape(20.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+        cornerRadius = 20.dp
     ) {
         Box(
             modifier = Modifier
@@ -553,8 +537,8 @@ private fun SmallFeatureCard(
                 .background(
                     Brush.linearGradient(
                         colors = listOf(
-                            feature.gradient.first.copy(alpha = if (isLocked) 0.45f else 0.95f),
-                            feature.gradient.second.copy(alpha = if (isLocked) 0.45f else 0.95f)
+                            feature.gradient.first.copy(alpha = 0.65f),
+                            feature.gradient.second.copy(alpha = 0.65f)
                         )
                     )
                 )
@@ -588,23 +572,7 @@ private fun SmallFeatureCard(
                 )
             }
 
-            if (isLocked) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .clip(RoundedCornerShape(bottomStart = 10.dp))
-                        .background(Color(0xFFFFD700))
-                        .padding(horizontal = 6.dp, vertical = 3.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Lock,
-                        contentDescription = stringResource(R.string.premium_locked_feature),
-                        tint = Color(0xFF1A0533),
-                        modifier = Modifier.size(14.dp)
-                    )
-                }
-            }
+            // Lock badge removed (Premium Unlocked)
         }
     }
 }
@@ -733,23 +701,7 @@ fun AnimatedFeatureCard(
                 }
 
                 // Lock badge — top-right corner for premium-gated features
-                if (isLocked) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .clip(RoundedCornerShape(bottomStart = 10.dp))
-                            .background(Color(0xFFFFD700))
-                            .padding(horizontal = 6.dp, vertical = 3.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Lock,
-                            contentDescription = stringResource(R.string.premium_locked_feature),
-                            tint = Color(0xFF1A0533),
-                            modifier = Modifier.size(14.dp)
-                        )
-                    }
-                }
+                // Lock badge removed (Premium Unlocked)
             }
         }
     }

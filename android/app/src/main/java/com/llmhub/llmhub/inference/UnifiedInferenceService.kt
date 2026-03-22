@@ -59,10 +59,14 @@ class UnifiedInferenceService(private val context: Context) : InferenceService {
         } catch (e: AllBackendsFailedException) {
             currentModel = null
             throw e
+        } catch (e: OutOfMemoryError) {
+            currentModel = null
+            throw AllBackendsFailedException("Insufficient RAM: ${e.message}")
         } catch (e: Exception) {
             android.util.Log.e("UnifiedInferenceService", "Service ${currentService.javaClass.simpleName} failed to load model '${model.name}'", e)
             currentModel = null
-            throw AllBackendsFailedException("Failed to load model '${model.name}': ${e.message}")
+            val msg = e.message ?: e.cause?.message ?: "Unknown error"
+            throw AllBackendsFailedException("Failed to load model '${model.name}': $msg")
         }
     }
 
@@ -110,10 +114,14 @@ class UnifiedInferenceService(private val context: Context) : InferenceService {
         } catch (e: AllBackendsFailedException) {
             currentModel = null
             throw e
+        } catch (e: OutOfMemoryError) {
+            currentModel = null
+            throw AllBackendsFailedException("Insufficient RAM: ${e.message}")
         } catch (e: Exception) {
             android.util.Log.e("UnifiedInferenceService", "Service ${currentService.javaClass.simpleName} failed to load model '${model.name}'", e)
             currentModel = null
-            throw AllBackendsFailedException("Failed to load model '${model.name}': ${e.message}")
+            val msg = e.message ?: e.cause?.message ?: "Unknown error"
+            throw AllBackendsFailedException("Failed to load model '${model.name}': $msg")
         }
     }
 
@@ -122,8 +130,12 @@ class UnifiedInferenceService(private val context: Context) : InferenceService {
         currentModel = null
     }
 
-    override suspend fun generateResponse(prompt: String, model: LLMModel): String {
-        return currentService.generateResponse(prompt, model)
+    override suspend fun generateResponse(prompt: String, model: LLMModel, images: List<Bitmap>): String {
+        return currentService.generateResponse(prompt, model, images)
+    }
+
+    override suspend fun generateResponseWithSession(prompt: String, model: LLMModel, chatId: String, images: List<Bitmap>): String {
+        return currentService.generateResponseWithSession(prompt, model, chatId, images)
     }
 
     override suspend fun generateResponseStream(prompt: String, model: LLMModel): Flow<String> {

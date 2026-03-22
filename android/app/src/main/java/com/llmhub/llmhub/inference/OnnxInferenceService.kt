@@ -35,6 +35,9 @@ import com.llmhub.llmhub.websearch.WebSearchService
 import com.llmhub.llmhub.websearch.DuckDuckGoSearchService
 import com.llmhub.llmhub.websearch.SearchIntentDetector
 import com.llmhub.llmhub.R
+import com.llmhub.llmhub.data.DeviceInfo
+import com.google.android.play.core.assetpacks.AssetPackManager
+import com.google.android.play.core.assetpacks.AssetPackManagerFactory
 
 @Singleton
 class OnnxInferenceService @Inject constructor(
@@ -54,6 +57,7 @@ class OnnxInferenceService @Inject constructor(
     private var currentModel: LLMModel? = null
     private var tokenizer: OnnxTokenizer? = null
     private var currentPreferredBackend: LlmInference.Backend? = null
+    private var qnnRuntimeDir: File? = null
     
     private var overrideMaxTokens: Int? = null
     private var overrideTopK: Int? = 40
@@ -108,6 +112,85 @@ class OnnxInferenceService @Inject constructor(
             Log.e(TAG, "Failed to load libonnxruntime4j_jni.so explicitly", e)
             throw e
         }
+    }
+    
+    /**
+     * Prepare QNN runtime libraries by extracting them from the qnn_pack asset pack.
+     * This is required for the ONNX Runtime QNN Execution Provider.
+     */
+    private fun checkMemoryForModel(model: LLMModel) {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val memoryInfo = android.app.ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(memoryInfo)
+        
+        val availRAM_GB = memoryInfo.availMem / (1024.0 * 1024.0 * 1024.0)
+        val modelSize_GB = model.sizeBytes / (1024.0 * 1024.0 * 1024.0)
+        
+        Log.i(TAG, "Memory check: Available RAM = %.2f GB, Model Size = %.2f GB".format(availRAM_GB, modelSize_GB))
+        
+        // ORT requires roughly 1.5x model size in native memory (decoder + KV cache + intermediate tensors)
+        // If available RAM is less than requirements, warn or throw
+        val requiredRAM = modelSize_GB + 0.5 // Minimal buffer
+        if (availRAM_GB < requiredRAM) {
+            val msg = "Insufficient RAM! Available: %.1f GB, Required: %.1f GB. Loading model '%s' will likely fail.".format(availRAM_GB, requiredRAM, model.name)
+            Log.w(TAG, msg)
+            if (availRAM_GB < modelSize_GB) {
+                throw OutOfMemoryError(msg)
+            }
+        }
+    }
+
+    private fun prepareQnnRuntime(): File? {
+        try {
+            val dir = File(context.filesDir, "qnn_runtime").apply { if (!exists()) mkdirs() }
+            
+            val assetPackManager = AssetPackManagerFactory.getInstance(context)
+            val packLocations = assetPackManager.packLocations
+            val qnnPackPath = packLocations["qnn_pack"]?.assetsPath()
+            
+            if (qnnPackPath != null) {
+                val qnnLibsDir = File(qnnPackPath, "qnnlibs")
+                if (qnnLibsDir.exists() && qnnLibsDir.isDirectory) {
+                    val qnnLibs = qnnLibsDir.listFiles() ?: emptyArray()
+                    Log.i(TAG, "Found ${qnnLibs.size} QNN libraries in asset pack")
+                    
+                    qnnLibs.forEach { sourceFile ->
+                        val targetFile = File(dir, sourceFile.name)
+                        if (!targetFile.exists() || targetFile.length() != sourceFile.length()) {
+                            sourceFile.inputStream().use { input ->
+                                targetFile.outputStream().use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                            targetFile.setReadable(true, true)
+                            targetFile.setExecutable(true, true)
+                        }
+                    }
+                    Log.i(TAG, "QNN runtime libraries prepared in ${dir.absolutePath}")
+                    return dir
+                }
+            }
+            
+            // Fallback to assets
+            val libs = context.assets.list("qnnlibs") ?: emptyArray()
+            if (libs.isNotEmpty()) {
+                libs.forEach { fileName ->
+                    val targetFile = File(dir, fileName)
+                    context.assets.open("qnnlibs/$fileName").use { input ->
+                        targetFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    targetFile.setReadable(true, true)
+                    targetFile.setExecutable(true, true)
+                }
+                return dir
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to prepare QNN runtime", e)
+        }
+        return null
     }
 
     private fun floatToHalfBits(value: Float): Short {
@@ -191,186 +274,210 @@ class OnnxInferenceService @Inject constructor(
         
         unloadModel()
 
-        return try {
-            val modelDir = getModelDirectory(model)
-            val modelFile = findOnnxModelFile(modelDir, model)
-            
-            if (!modelFile.exists()) {
-                Log.e(TAG, "Model file not found: ${modelFile.absolutePath}")
-                return false
-            }
+        // Detailed loading logic with descriptive exceptions
+        val modelDir = getModelDirectory(model)
+        val modelFile = findOnnxModelFile(modelDir, model)
+        
+        if (!modelFile.exists()) {
+            throw java.io.FileNotFoundException("Model file not found: ${modelFile.absolutePath}")
+        }
 
-            val useGpu = preferredBackend == LlmInference.Backend.GPU
-            Log.d(TAG, "Loading ONNX model from: ${modelFile.absolutePath} (backend: ${preferredBackend?.name ?: "default"}, useNnapi: $useGpu)")
-            
-            withContext(Dispatchers.IO) {
-                mutex.withLock {
-                    try {
-                        // Log which libonnxruntime.so we are about to load
-                        logOrtNativeLibs()
-                        // Force-load ORT native libs in the correct order
-                        ensureOrtLoaded()
-                        ortEnvironment = OrtEnvironment.getEnvironment()
-                    } catch (e: UnsatisfiedLinkError) {
-                        Log.e(TAG, "ONNX Runtime native library conflict (libonnxruntime.so). " +
-                            "This usually means the Nexa SDK's bundled copy was loaded instead of Microsoft's. " +
-                            "Clean build and reinstall required.", e)
-                        return@withContext
-                    } catch (e: ExceptionInInitializerError) {
-                        Log.e(TAG, "ONNX Runtime initialization failed: ${e.cause?.message}", e)
-                        return@withContext
-                    }
+        // Memory Guard
+        checkMemoryForModel(model)
+
+        val useGpu = preferredBackend == LlmInference.Backend.GPU
+        Log.d(TAG, "Loading ONNX model: ${model.name} (Backend: ${preferredBackend?.name ?: "default"})")
+        
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                try {
+                    logOrtNativeLibs()
+                    ensureOrtLoaded()
+                    ortEnvironment = OrtEnvironment.getEnvironment()
+                } catch (e: UnsatisfiedLinkError) {
+                    val msg = "Native library conflict: libonnxruntime.so. Reinstall/Clean build required."
+                    Log.e(TAG, msg, e)
+                    throw Exception(msg, e)
+                } catch (e: ExceptionInInitializerError) {
+                    val msg = "ONNX Runtime initialization failed: ${e.cause?.message}"
+                    Log.e(TAG, msg, e)
+                    throw Exception(msg, e)
+                }
+                
+                if (ortEnvironment == null) {
+                    throw Exception("Failed to create ORT environment")
+                }
+                
+                val lastError = StringBuilder()
+                
+                if (useGpu) {
+                    val chipset = DeviceInfo.getChipsetSuffix()
+                    val isSnapdragon = chipset != null && chipset != "min"
                     
-                    if (ortEnvironment == null) {
-                        Log.e(TAG, "Failed to create ORT environment")
-                        return@withContext
+                    if (isSnapdragon) {
+                        Log.d(TAG, "Attempting QNN Execution Provider...")
+                        val qnnDir = prepareQnnRuntime()
+                        if (qnnDir != null) {
+                            try {
+                                val qnnOptions = OrtSession.SessionOptions().apply {
+                                    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                                    setIntraOpNumThreads(Runtime.getRuntime().availableProcessors())
+                                    
+                                    val libQnnHtpPath = File(qnnDir, "libQnnHtp.so").absolutePath
+                                    val qnnBackendOptions = mutableMapOf<String, String>()
+                                    qnnBackendOptions["backend_path"] = libQnnHtpPath
+                                    qnnBackendOptions["htp_graph_finalization_optimization_mode"] = "3"
+                                    
+                                    try {
+                                        val addQnnMethod = this::class.java.getMethod("addQnn", Map::class.java)
+                                        addQnnMethod.invoke(this, qnnBackendOptions)
+                                    } catch (_: Exception) {
+                                        addConfigEntry("ep.qnn.backend_path", libQnnHtpPath)
+                                        addConfigEntry("ep.qnn.htp_graph_finalization_optimization_mode", "3")
+                                    }
+                                    addCPU(true)
+                                }
+                                ortSession = ortEnvironment?.createSession(modelFile.absolutePath, qnnOptions)
+                                Log.i(TAG, "Session created with QNN")
+                            } catch (e: Exception) {
+                                lastError.append("QNN: ${e.message}; ")
+                                Log.w(TAG, "QNN failed: ${e.message}")
+                            }
+                        }
                     }
-                    
-                    if (useGpu) {
-                        // Try NNAPI-only first (no CPU fallback) so full graph runs on GPU/NPU if driver supports it.
+
+                    if (ortSession == null) {
                         try {
+                            Log.d(TAG, "Attempting NNAPI-only...")
                             val nnapiOnlyOptions = OrtSession.SessionOptions().apply {
                                 setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
                                 setIntraOpNumThreads(Runtime.getRuntime().availableProcessors())
-                                try { addConfigEntry("ep.nnapi.partitioning_stop_ops", "") } catch (_: Exception) { }
                                 addConfigEntry("session.disable_cpu_ep_fallback", "1")
                                 addNnapi(EnumSet.of(NNAPIFlags.USE_FP16, NNAPIFlags.CPU_DISABLED))
                             }
                             ortSession = ortEnvironment?.createSession(modelFile.absolutePath, nnapiOnlyOptions)
-                            Log.i(TAG, "ONNX session created with NNAPI only (full graph on device GPU/NPU)")
+                            Log.i(TAG, "Session created with NNAPI")
                         } catch (e: Exception) {
-                            Log.w(TAG, "NNAPI-only failed (model has ops NNAPI cannot run on this device), using NNAPI+CPU: $e")
+                            lastError.append("NNAPI-only: ${e.message}; ")
+                            Log.w(TAG, "NNAPI-only failed, trying NNAPI+CPU...")
+                            try {
+                                val sessionOptions = OrtSession.SessionOptions().apply {
+                                    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                                    setIntraOpNumThreads(Runtime.getRuntime().availableProcessors())
+                                    addNnapi(EnumSet.of(NNAPIFlags.USE_FP16, NNAPIFlags.CPU_DISABLED))
+                                    addCPU(true)
+                                }
+                                ortSession = ortEnvironment?.createSession(modelFile.absolutePath, sessionOptions)
+                                Log.i(TAG, "Session created with NNAPI+CPU")
+                            } catch (e2: Exception) {
+                                lastError.append("NNAPI+CPU: ${e2.message}; ")
+                            }
+                        }
+                    }
+
+                    if (ortSession == null) {
+                        Log.w(TAG, "All GPU/NPU backends failed. Falling back to CPU...")
+                        try {
                             val sessionOptions = OrtSession.SessionOptions().apply {
                                 setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
                                 setIntraOpNumThreads(Runtime.getRuntime().availableProcessors())
-                                try { addConfigEntry("ep.nnapi.partitioning_stop_ops", "") } catch (_: Exception) { }
-                                addNnapi(EnumSet.of(NNAPIFlags.USE_FP16, NNAPIFlags.CPU_DISABLED))
-                                addCPU(true)
                             }
                             ortSession = ortEnvironment?.createSession(modelFile.absolutePath, sessionOptions)
-                            Log.i(TAG, "ONNX session created with NNAPI (GPU/accelerator) + CPU fallback — ops supported by NNAPI run on device accelerator; rest on CPU")
+                        } catch (e: Exception) {
+                            lastError.append("CPU: ${e.message}")
+                            throw Exception("Failed to load model '${model.name}' on any backend. Errors: $lastError", e)
                         }
-                    } else {
+                    }
+                } else {
+                    try {
                         val sessionOptions = OrtSession.SessionOptions().apply {
                             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
                             setIntraOpNumThreads(Runtime.getRuntime().availableProcessors())
                         }
                         ortSession = ortEnvironment?.createSession(modelFile.absolutePath, sessionOptions)
-                        Log.d(TAG, "ONNX session created (CPU only — GPU not selected)")
+                        Log.d(TAG, "Session created (CPU only)")
+                    } catch (e: Exception) {
+                        throw Exception("Failed to create CPU session for '${model.name}': ${e.message}", e)
                     }
-                    tokenizer = loadTokenizer(modelDir)
-                    currentModel = model
-                    currentPreferredBackend = preferredBackend
-                    
-                    // If decoder expects inputs_embeds (e.g. Ministral-3 ONNX), load embed_tokens per model docs
-                    val session = ortSession!!
-                    if ("inputs_embeds" in session.inputNames && "input_ids" !in session.inputNames) {
-                        val embedFile = File(modelDir, "embed_tokens_fp16.onnx")
-                        if (embedFile.exists()) {
-                            val embedOptions = if (useGpu) {
-                                try {
-                                    OrtSession.SessionOptions().apply {
-                                        setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-                                        setIntraOpNumThreads(Runtime.getRuntime().availableProcessors())
-                                        try { addConfigEntry("ep.nnapi.partitioning_stop_ops", "") } catch (_: Exception) { }
-                                        addNnapi(EnumSet.of(NNAPIFlags.USE_FP16, NNAPIFlags.CPU_DISABLED))
-                                        addCPU(true)
-                                    }
-                                } catch (_: Exception) {
-                                    OrtSession.SessionOptions().apply {
-                                        setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-                                        setIntraOpNumThreads(Runtime.getRuntime().availableProcessors())
-                                    }
-                                }
-                            } else {
-                                OrtSession.SessionOptions().apply {
-                                    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-                                    setIntraOpNumThreads(Runtime.getRuntime().availableProcessors())
-                                }
+                }
+
+                // Final sanity check
+                if (ortSession == null) {
+                    throw Exception("Final session is null for '${model.name}' without exception caught")
+                }
+
+                tokenizer = loadTokenizer(modelDir) ?: throw Exception("Tokenizer failed to load for '${model.name}'. Ensure tokenizer.json and tokenizer_config.json are in '${modelDir.absolutePath}'")
+                
+                currentModel = model
+                currentPreferredBackend = preferredBackend
+                
+                // Optional sessions (Vision, Embedding)
+                val session = ortSession!!
+                if ("inputs_embeds" in session.inputNames && "input_ids" !in session.inputNames) {
+                    val embedFile = File(modelDir, "embed_tokens_fp16.onnx")
+                    if (embedFile.exists()) {
+                        try {
+                            val embedOptions = OrtSession.SessionOptions().apply {
+                                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                                setIntraOpNumThreads(Runtime.getRuntime().availableProcessors())
+                                if (useGpu) addNnapi(EnumSet.of(NNAPIFlags.USE_FP16, NNAPIFlags.CPU_DISABLED))
+                                addCPU(true)
                             }
                             ortEmbedSession = ortEnvironment?.createSession(embedFile.absolutePath, embedOptions)
-                            Log.d(TAG, "Loaded embedding session: ${embedFile.name} (NNAPI: $useGpu)")
-                        } else {
-                            Log.w(TAG, "Decoder expects inputs_embeds but embed_tokens_fp16.onnx not found in ${modelDir.absolutePath}")
-                        }
-                    } else {
-                        ortEmbedSession = null
-                    }
-                    
-                    // Ministral-3 vision: load vision encoder and config (image_token_index)
-                    ortVisionSession = null
-                    imageTokenIndex = null
-                    if (model.name.contains("Ministral", ignoreCase = true) || model.name.contains("Mistral", ignoreCase = true)) {
-                        val visionFile = File(modelDir, "vision_encoder_q4.onnx")
-                        if (visionFile.exists()) {
-                            try {
-                                val visionOptions = OrtSession.SessionOptions().apply {
-                                    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-                                    setIntraOpNumThreads(Runtime.getRuntime().availableProcessors())
-                                }
-                                ortVisionSession = ortEnvironment?.createSession(visionFile.absolutePath, visionOptions)
-                                Log.d(TAG, "Loaded vision encoder: ${visionFile.name}")
-                                val configFile = File(modelDir, "config.json")
-                                if (configFile.exists()) {
-                                    val configJson = configFile.readText()
-                                    val config = Gson().fromJson<Map<String, Any>>(configJson, object : TypeToken<Map<String, Any>>() {}.type)
-                                    val textConfig = config["text_config"] as? Map<*, *>
-                                    val idx = (textConfig?.get("image_token_index") as? Number)?.toLong()
-                                        ?: (config["image_token_index"] as? Number)?.toLong()
-                                    if (idx != null) {
-                                        imageTokenIndex = idx
-                                        Log.d(TAG, "Image token index: $idx")
-                                    } else Log.w(TAG, "config.json has no image_token_index")
-                                } else Log.w(TAG, "config.json not found for vision")
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Failed to load vision encoder: ${e.message}")
-                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to load optional embedding session: ${e.message}")
                         }
                     }
-                    
-                    Log.d(TAG, "ONNX model loaded successfully")
-                    Log.d(TAG, "Input names: ${ortSession?.inputNames}")
-                    Log.d(TAG, "Output names: ${ortSession?.outputNames}")
                 }
+                
+                if (model.name.contains("Ministral", ignoreCase = true) || model.name.contains("Mistral", ignoreCase = true)) {
+                    val visionFile = File(modelDir, "vision_encoder_q4.onnx")
+                    if (visionFile.exists()) {
+                        try {
+                            val visionOptions = OrtSession.SessionOptions().apply {
+                                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                                setIntraOpNumThreads(Runtime.getRuntime().availableProcessors())
+                            }
+                            ortVisionSession = ortEnvironment?.createSession(visionFile.absolutePath, visionOptions)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to load optional vision encoder: ${e.message}")
+                        }
+                    }
+                }
+                
+                Log.d(TAG, "Model '${model.name}' loaded successfully on ${if (useGpu && ortSession != null) "GPU/NPU" else "CPU"}")
             }
-            // If ortEnvironment or ortSession failed to initialize, report failure
-            ortEnvironment != null && ortSession != null
-        } catch (e: UnsatisfiedLinkError) {
-            Log.e(TAG, "ONNX Runtime native library failed to load", e)
-            false
-        } catch (e: ExceptionInInitializerError) {
-            Log.e(TAG, "ONNX Runtime class init failed", e)
-            false
-        } catch (e: Exception) {
-            Log.e(TAG, "Error loading ONNX model", e)
-            false
         }
+        return true
     }
 
     private fun getModelDirectory(model: LLMModel): File {
         val modelsDir = File(context.filesDir, "models")
-        // Use same naming convention as downloadOnnxModel
         val modelDirName = model.name.replace(" ", "_").replace(Regex("[^a-zA-Z0-9_.-]"), "")
         val modelDir = File(modelsDir, modelDirName)
-        return if (modelDir.exists()) modelDir else modelsDir
+        
+        // Return model-specific directory if it exists, otherwise root models dir
+        return if (modelDir.exists() && modelDir.isDirectory) modelDir else modelsDir
     }
 
     private fun findOnnxModelFile(modelDir: File, model: LLMModel): File {
-        // Extract clean filename from URL (strip query params)
+        // 1. Primary path: modelDir + filename from URL
         val localName = model.url.substringAfterLast("/").substringBefore("?")
-        
-        var modelFile = File(modelDir, localName)
+        val modelFile = File(modelDir, localName)
         if (modelFile.exists()) return modelFile
         
+        // 2. Global models dir (legacy/direct download)
         val modelsDir = File(context.filesDir, "models")
-        modelFile = File(modelsDir, localName)
-        if (modelFile.exists()) return modelFile
+        val globalFile = File(modelsDir, localName)
+        if (globalFile.exists()) return globalFile
         
-        // Fallback: find any .onnx file in the directory
-        val onnxFiles = modelDir.listFiles { _, name -> name.endsWith(".onnx") }
-        if (onnxFiles?.isNotEmpty() == true) return onnxFiles.first()
+        // 3. Fallback: find any .onnx file in the specific model directory (if not root)
+        if (modelDir != modelsDir) {
+            val onnxFiles = modelDir.listFiles { _, name -> name.endsWith(".onnx") }
+            if (onnxFiles?.isNotEmpty() == true) return onnxFiles.first()
+        }
         
-        return File(modelDir, localName)
+        return modelFile // Return target path for error logging
     }
 
     private fun loadTokenizer(modelDir: File): OnnxTokenizer? {
@@ -425,11 +532,16 @@ class OnnxInferenceService @Inject constructor(
         }
     }
 
-    override suspend fun generateResponse(prompt: String, model: LLMModel): String {
-        ensureModelLoaded(model)
+    override suspend fun generateResponse(prompt: String, model: LLMModel, images: List<Bitmap>): String {
         val result = StringBuilder()
         generateResponseStream(prompt, model).collect { result.append(it) }
         return result.toString()
+    }
+
+    override suspend fun generateResponseWithSession(prompt: String, model: LLMModel, chatId: String, images: List<Bitmap>): String {
+        // ONNX current implementation is focused on single-session; the generateResponseStream 
+        // will use the current loaded model session.
+        return generateResponse(prompt, model, images)
     }
 
     override suspend fun generateResponseStream(prompt: String, model: LLMModel): Flow<String> = callbackFlow {
@@ -1162,7 +1274,10 @@ class OnnxInferenceService @Inject constructor(
     
     override fun isVisionCurrentlyDisabled(): Boolean = (ortVisionSession == null)
     override fun isAudioCurrentlyDisabled(): Boolean = true
-    override fun isGpuBackendEnabled(): Boolean = currentPreferredBackend == LlmInference.Backend.GPU
+    override fun isGpuBackendEnabled(): Boolean {
+        // Return true if using either GPU (NNAPI) or NPU (QNN)
+        return currentPreferredBackend == LlmInference.Backend.GPU
+    }
     override fun getEffectiveMaxTokens(model: LLMModel): Int = overrideMaxTokens ?: model.contextWindowSize
 }
 

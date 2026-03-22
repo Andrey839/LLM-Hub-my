@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Common -->
     <string name="app_name">LLM Hub</string>
@@ -445,6 +445,10 @@
     <string name="feature_scam_detector_desc">Аналіз тексту, зображень або URL на можливе шахрайство</string>
     <string name="feature_image_generator">Генератор Зображень</string>
     <string name="feature_image_generator_desc">Створюйте зображення з текстових описів за допомогою ШІ</string>
+    <string name="feature_creator_generation">creAItors</string>
+    <string name="feature_creator_generation_desc">Створюйте власних персонажів ШІ</string>
+    <string name="feature_browser_agent">Браузерний агент</string>
+    <string name="feature_browser_agent_desc">Інтерактивний перегляд веб-сторінок та автоматизація завдань за допомогою ШІ</string>
 
     <!-- Writing Aid Screen -->
     <string name="writing_aid_title">Помічник письма</string>
@@ -709,11 +713,6 @@
     <string name="dialog_delete_creator_message">Видалити Персону \"%1\"?</string>
     <string name="action_rename">Перейменувати</string>
 
-    <!-- Vibe Coder Feature -->
-    <string name="feature_vibe_coder">VibeCode</string>
-    <string name="feature_vibe_coder_desc">Генеруйте HTML, JavaScript та Python-код за допомогою ШІ</string>
-    <string name="feature_creator_generation">Персони</string>
-    <string name="feature_creator_generation_desc">Створюйте власні персоналізовані персони ШІ</string>
     <string name="drawer_my_creators">мої Персони</string>
     <string name="vibe_coder_title">VibeCode</string>
     <string name="vibe_coder_prompt_label">Що ви хочете закодувати?</string>

@@ -1,6 +1,7 @@
 package com.llmhub.llmhub.viewmodels
 
 import android.content.Context
+import com.llmhub.llmhub.viewmodels.BenchmarkViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.llmhub.llmhub.inference.InferenceService
@@ -30,6 +31,22 @@ class ChatViewModelFactory(
         if (modelClass.isAssignableFrom(CreatorViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
             return CreatorViewModel(repository, inferenceService, context) as T
+        }
+
+        if (modelClass.isAssignableFrom(BenchmarkViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return BenchmarkViewModel(inferenceService, context) as T
+        }
+
+        if (modelClass.isAssignableFrom(BrowserAgentViewModel::class.java)) {
+            val browserService = com.llmhub.llmhub.browser.BrowserAgentService()
+            @Suppress("UNCHECKED_CAST")
+            return BrowserAgentViewModel(inferenceService, browserService) as T
+        }
+
+        if (modelClass.isAssignableFrom(GitHubAgentViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return GitHubAgentViewModel(context, inferenceService) as T
         }
 
         throw IllegalArgumentException("Unknown ViewModel class")

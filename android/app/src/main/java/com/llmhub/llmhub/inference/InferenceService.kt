@@ -44,7 +44,13 @@ interface InferenceService {
     suspend fun loadModel(model: LLMModel, preferredBackend: LlmInference.Backend? = null, deviceId: String? = null): Boolean
     suspend fun loadModel(model: LLMModel, preferredBackend: LlmInference.Backend? = null, disableVision: Boolean = false, disableAudio: Boolean = false, deviceId: String? = null): Boolean
     suspend fun unloadModel()
-    suspend fun generateResponse(prompt: String, model: LLMModel): String
+    suspend fun generateResponse(prompt: String, model: LLMModel, images: List<Bitmap> = emptyList()): String
+    
+    /**
+     * Generate a response using a persistent session (KV Cache reuse).
+     * @param chatId Unique identifier for the session. If empty, a one-shot session is used.
+     */
+    suspend fun generateResponseWithSession(prompt: String, model: LLMModel, chatId: String, images: List<Bitmap> = emptyList()): String
     suspend fun generateResponseStream(prompt: String, model: LLMModel): Flow<String>
     suspend fun generateResponseStreamWithSession(
         prompt: String, 
@@ -463,7 +469,21 @@ class MediaPipeInferenceService(private val applicationContext: Context) : Infer
             }
             
             // Determine backend - use preferred backend if provided, otherwise use model's GPU support
-            val backend = preferredBackend ?: if (model.supportsGpu) LlmInference.Backend.GPU else LlmInference.Backend.CPU
+            // For Qualcomm 8 Gen 2+ SOCs, prioritize NPU (HTP) if available in the SDK.
+            val isQualcommNpuSupported = com.llmhub.llmhub.data.DeviceInfo.isQualcommNpuSupported()
+            val backend = preferredBackend ?: if (isQualcommNpuSupported && model.supportsGpu) {
+                try {
+                    // LlmInference.Backend.NPU is available in MediaPipe 0.10.20+ for Qualcomm HTP
+                    LlmInference.Backend.valueOf("NPU")
+                } catch (e: Exception) {
+                    Log.w(TAG, "LlmInference.Backend.NPU not found in SDK, falling back to GPU")
+                    LlmInference.Backend.GPU
+                }
+            } else if (model.supportsGpu) {
+                LlmInference.Backend.GPU
+            } else {
+                LlmInference.Backend.CPU
+            }
             
             Log.d(TAG, "Selected backend: $backend for model: ${modelFile.name} ${if (preferredBackend != null) "(user preference)" else "(auto-selected)"}")
             
@@ -596,8 +616,14 @@ class MediaPipeInferenceService(private val applicationContext: Context) : Infer
         }
     }
 
-    override suspend fun generateResponse(prompt: String, model: LLMModel): String {
-        ensureModelLoaded(model)
+    override suspend fun generateResponseWithSession(prompt: String, model: LLMModel, chatId: String, images: List<Bitmap>): String {
+        val result = StringBuilder()
+        generateResponseStreamWithSession(prompt, model, chatId, images = images).collect { result.append(it) }
+        return result.toString()
+    }
+
+    override suspend fun generateResponse(prompt: String, model: LLMModel, images: List<Bitmap>): String {
+        ensureModelLoaded(model, disableVision = images.isEmpty() && model.supportsVision)
         
         // Inject Kid Mode Instruction if enabled (Global Injection)
         val kidModeManager = com.llmhub.llmhub.utils.KidModeManager(applicationContext)
@@ -623,8 +649,15 @@ class MediaPipeInferenceService(private val applicationContext: Context) : Infer
                 localSession = createSession(engine)
                 var isComplete = false
                 
-                // Add query to session
+                // CRITICAL: For vision models, text query MUST be added before images
                 localSession.addQueryChunk(finalPrompt)
+                
+                // Add images if provided and supported
+                if (images.isNotEmpty() && model.supportsVision) {
+                    for (image in images) {
+                        localSession.addImage(BitmapImageBuilder(image).build())
+                    }
+                }
                 
                 // Generate response synchronously
                 localSession.generateResponseAsync { partialResult, done ->
@@ -922,8 +955,11 @@ class MediaPipeInferenceService(private val applicationContext: Context) : Infer
             // This is required by MediaPipe's vision implementation
             if (enhancedPrompt.trim().isNotEmpty()) {
                 Log.d(TAG, "Adding text query to session for chat $chatId: '${enhancedPrompt.take(100)}...'")
+                val startTime = System.currentTimeMillis()
                 try {
                     currentSession.addQueryChunk(enhancedPrompt)
+                    val duration = System.currentTimeMillis() - startTime
+                    Log.d(TAG, "addQueryChunk took ${duration}ms for ${enhancedPrompt.length} chars")
                     estimatedSessionTokens += promptTokens
                 } catch (e: Exception) {
                     val msg = e.message ?: ""
@@ -974,6 +1010,7 @@ class MediaPipeInferenceService(private val applicationContext: Context) : Infer
             // Add images AFTER text query (MediaPipe requirement for vision models)
             if (images.isNotEmpty() && model.supportsVision) {
                 Log.d(TAG, "Adding ${images.size} images to session for chat $chatId")
+                val imgStartTime = System.currentTimeMillis()
                 for ((index, image) in images.withIndex()) {
                     try {
                         Log.d(TAG, "Adding image $index (${image.width}x${image.height}) to session")
@@ -992,6 +1029,8 @@ class MediaPipeInferenceService(private val applicationContext: Context) : Infer
                         Log.e(TAG, "Failed to add image $index to session: ${e.message}", e)
                     }
                 }
+                val imgDuration = System.currentTimeMillis() - imgStartTime
+                Log.d(TAG, "Adding all images took ${imgDuration}ms")
             } else if (images.isNotEmpty() && !model.supportsVision) {
                 Log.w(TAG, "Model ${model.name} does not support vision, ignoring ${images.size} images")
             } else if (images.isEmpty() && model.supportsVision) {
@@ -1033,7 +1072,15 @@ class MediaPipeInferenceService(private val applicationContext: Context) : Infer
             isGenerating = true
             val isLlama = isLlamaModel(model)
             
+            val genStartTime = System.currentTimeMillis()
+            var firstTokenTime: Long = 0
+            
             currentSession.generateResponseAsync { partialResult, done ->
+                if (firstTokenTime == 0L && partialResult.isNotEmpty()) {
+                    firstTokenTime = System.currentTimeMillis()
+                    Log.d(TAG, "Time to first token (TTFT): ${firstTokenTime - genStartTime}ms")
+                }
+                
                 var processedResult = partialResult
                 var forceDone = done
                 
@@ -1066,6 +1113,8 @@ class MediaPipeInferenceService(private val applicationContext: Context) : Infer
                 }
                 
                 if (forceDone) {
+                    val totalGenTime = System.currentTimeMillis() - genStartTime
+                    Log.d(TAG, "Generation complete in ${totalGenTime}ms (Tokens approx: ${kotlin.math.ceil(responseBuilder.length / 4.0).toInt()})")
                     isGenerationComplete = true
                     isGenerating = false
                     // Update session token count with response tokens (using standardized 4 chars/token estimation)
@@ -1391,7 +1440,8 @@ class MediaPipeInferenceService(private val applicationContext: Context) : Infer
     }
     
     override fun isGpuBackendEnabled(): Boolean {
-        return currentBackend == LlmInference.Backend.GPU
+        // Return true if using either GPU or NPU backend
+        return currentBackend == LlmInference.Backend.GPU || currentBackend?.name == "NPU"
     }
 
     /**

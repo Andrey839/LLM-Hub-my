@@ -8,6 +8,9 @@ interface MemoryDao {
     @Query("SELECT * FROM memory_documents ORDER BY createdAt DESC")
     fun getAllMemory(): Flow<List<MemoryDocument>>
 
+    @Query("SELECT * FROM memory_documents")
+    suspend fun getAll(): List<MemoryDocument>
+
     @Query("SELECT * FROM memory_documents WHERE id = :id")
     suspend fun getById(id: String): MemoryDocument?
 
@@ -23,6 +26,9 @@ interface MemoryDao {
     @Query("DELETE FROM memory_documents")
     suspend fun deleteAll()
 
+    @Query("DELETE FROM memory_documents WHERE id = :id")
+    suspend fun deleteById(id: String)
+
     // Chunk-level embedding persistence
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertChunk(chunk: MemoryChunkEmbedding)
@@ -35,6 +41,9 @@ interface MemoryDao {
 
     @Query("DELETE FROM memory_chunk_embeddings WHERE docId = :docId")
     suspend fun deleteChunksForDoc(docId: String)
+
+    @Query("DELETE FROM memory_chunk_embeddings WHERE docId = :docId")
+    suspend fun deleteChunksByDocId(docId: String)
 
     @Query("DELETE FROM memory_chunk_embeddings")
     suspend fun deleteAllChunks()
