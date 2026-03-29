@@ -110,6 +110,11 @@
     <!-- Navigation -->
     <string name="chat">Chat</string>
     <string name="models">Models</string>
+    <string name="code_editor">Code Editor</string>
+    <string name="tab_helper">Tab Helper</string>
+    <string name="tab_helper_desc">Assisted indentation and Tab key behavior.</string>
+    <string name="editor_theme">Editor Theme</string>
+    <string name="editor_theme_desc">Color scheme for syntax highlighting.</string>
     <string name="settings">Settings</string>
     <string name="about">About</string>
     

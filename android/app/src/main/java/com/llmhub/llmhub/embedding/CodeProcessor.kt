@@ -28,7 +28,8 @@ class CodeProcessor(private val context: Context) {
             onProgress("Found ${codeFiles.size} code files. Starting indexing...")
 
             for ((fileIndex, file) in codeFiles.withIndex()) {
-                val relativePath = file.absolutePath.removePrefix(projectDir.parentFile?.absolutePath ?: "")
+                val relativePath = file.absolutePath.removePrefix(projectDir.absolutePath).removePrefix(File.separator)
+                // Use a more compact log in progress
                 onProgress("Indexing [$fileIndex/${codeFiles.size}]: $relativePath")
                 
                 val content = try { file.readText() } catch (e: Exception) { "" }
@@ -99,7 +100,7 @@ class CodeProcessor(private val context: Context) {
 
     private fun isCodeFile(file: File): Boolean {
         val ext = file.extension.lowercase()
-        return setOf("kt", "java", "py", "js", "ts", "cpp", "h", "swift", "html", "css", "gradle", "xml", "md").contains(ext)
+        return setOf("kt", "java", "py", "js", "ts", "cpp", "h", "swift", "html", "css", "gradle", "xml", "md", "pro", "properties", "sh", "bat", "json").contains(ext)
     }
 
     private fun createCodeChunks(content: String, filePath: String): List<String> {

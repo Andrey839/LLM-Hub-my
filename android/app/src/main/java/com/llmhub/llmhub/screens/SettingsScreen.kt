@@ -57,7 +57,8 @@ fun SettingsScreen(
     onNavigateToTerms: () -> Unit,
     onNavigateToPremium: () -> Unit = {},
     onNavigateToBenchmark: () -> Unit = {},
-    themeViewModel: ThemeViewModel = viewModel()
+    themeViewModel: ThemeViewModel = viewModel(),
+    githubAgentViewModel: com.llmhub.llmhub.viewmodels.GitHubAgentViewModel = viewModel()
 ) {
     val uriHandler = LocalUriHandler.current
     val coroutineScope = rememberCoroutineScope()
@@ -74,6 +75,9 @@ fun SettingsScreen(
     val autoReadoutEnabled by themeViewModel.autoReadoutEnabled.collectAsState()
     val isPremium by (context.applicationContext as com.llmhub.llmhub.LlmHubApplication)
         .billingManager.isPremium.collectAsState(initial = false)
+    
+    val editorSettings by githubAgentViewModel.editorSettings.collectAsState()
+    var showEditorThemeDialog by remember { mutableStateOf(false) }
     
     Scaffold(
         topBar = {
@@ -823,6 +827,56 @@ fun SettingsScreen(
             }
             
             item {
+                SettingsSection(title = stringResource(R.string.code_editor)) {
+                    // Tab Helper
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Keyboard, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = stringResource(R.string.tab_helper), style = MaterialTheme.typography.bodyLarge)
+                            Text(text = stringResource(R.string.tab_helper_desc), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = editorSettings.useTabHelper,
+                            onCheckedChange = { githubAgentViewModel.updateEditorSettings(editorSettings.copy(useTabHelper = it)) }
+                        )
+                    }
+
+                    // Theme Picker
+                    SettingsItem(
+                        icon = Icons.Default.Palette,
+                        title = stringResource(R.string.editor_theme),
+                        subtitle = editorSettings.themeName.name.lowercase().replaceFirstChar { it.uppercase() },
+                        onClick = { showEditorThemeDialog = true }
+                    )
+
+                    // Background Analysis Toggle
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Troubleshoot, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = "Background Analysis", style = MaterialTheme.typography.bodyLarge)
+                            Text(text = "Proactively find bugs as you type (uses AI)", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = editorSettings.isAutoAnalysisEnabled,
+                            onCheckedChange = { githubAgentViewModel.updateEditorSettings(editorSettings.copy(isAutoAnalysisEnabled = it)) }
+                        )
+                    }
+                }
+            }
+
+            item {
                 SettingsSection(title = stringResource(R.string.appearance)) {
                     SettingsItem(
                         icon = Icons.Outlined.Palette,
@@ -1008,6 +1062,54 @@ fun SettingsScreen(
                 TextButton(
                     onClick = { showLanguageDialog = false }
                 ) {
+                    Text(stringResource(R.string.cancel))
+                }
+            }
+        )
+    }
+    
+    // Editor Theme Selection Dialog
+    if (showEditorThemeDialog) {
+        val configuration = LocalConfiguration.current
+        val isLandscapeEditorTheme = configuration.screenWidthDp > configuration.screenHeightDp
+        AlertDialog(
+            onDismissRequest = { showEditorThemeDialog = false },
+            title = { Text(stringResource(R.string.editor_theme)) },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .verticalScroll(rememberScrollState())
+                        .heightIn(max = if (isLandscapeEditorTheme) (configuration.screenHeightDp.dp * 0.6f) else Dp.Unspecified)
+                ) {
+                    com.llmhub.llmhub.utils.EditorThemeName.values().forEach { theme ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    githubAgentViewModel.updateEditorSettings(editorSettings.copy(themeName = theme))
+                                    showEditorThemeDialog = false
+                                }
+                                .padding(vertical = 12.dp)
+                        ) {
+                            RadioButton(
+                                selected = editorSettings.themeName == theme,
+                                onClick = {
+                                    githubAgentViewModel.updateEditorSettings(editorSettings.copy(themeName = theme))
+                                    showEditorThemeDialog = false
+                                }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = theme.name.lowercase().replaceFirstChar { it.uppercase() },
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showEditorThemeDialog = false }) {
                     Text(stringResource(R.string.cancel))
                 }
             }

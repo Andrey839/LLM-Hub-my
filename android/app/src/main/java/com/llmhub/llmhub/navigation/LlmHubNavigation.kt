@@ -267,6 +267,9 @@ fun LlmHubNavigation(
         }
         
         composable(Screen.Settings.route) {
+            val githubAgentViewModel: com.llmhub.llmhub.viewmodels.GitHubAgentViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+                factory = chatViewModelFactory
+            )
             SettingsScreen(
                 onNavigateBack = {
                     navController.popBackStack()
@@ -286,7 +289,8 @@ fun LlmHubNavigation(
                 onNavigateToBenchmark = {
                     navController.navigate(Screen.Benchmark.route)
                 },
-                themeViewModel = themeViewModel
+                themeViewModel = themeViewModel,
+                githubAgentViewModel = githubAgentViewModel
             )
         }
         

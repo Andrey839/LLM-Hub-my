@@ -1,5 +1,7 @@
 package com.llmhub.llmhub.viewmodels
 
+import java.io.File
+
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -19,7 +21,13 @@ import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.map as flowMap
+import kotlinx.serialization.json.*
+
+// JSON extension helpers
+fun JsonElement.asJsonObject() = this as? JsonObject ?: throw Exception("Not an object")
+fun JsonElement.asString() = (this as? JsonPrimitive)?.content ?: ""
+operator fun JsonObject.get(key: String) = this[key]
 
 sealed class GitHubAuthState {
     object Idle : GitHubAuthState()
@@ -40,6 +48,7 @@ class GitHubAgentViewModel(
     private val githubService: GitHubService = GitHubServiceImpl(context)
     private val codeProcessor = com.llmhub.llmhub.embedding.CodeProcessor(context)
     private val ragManager = com.llmhub.llmhub.embedding.RagServiceManager.getInstance(context)
+    private val prefs = context.getSharedPreferences("github_agent_prefs", Context.MODE_PRIVATE)
 
     private val _authState = MutableStateFlow<GitHubAuthState>(GitHubAuthState.Idle)
     val authState: StateFlow<GitHubAuthState> = _authState.asStateFlow()
@@ -65,6 +74,9 @@ class GitHubAgentViewModel(
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
+    private val _currentChatInput = MutableStateFlow("")
+    val currentChatInput: StateFlow<String> = _currentChatInput.asStateFlow()
+
     private val _isChatActive = MutableStateFlow(false)
     val isChatActive: StateFlow<Boolean> = _isChatActive.asStateFlow()
 
@@ -87,12 +99,82 @@ class GitHubAgentViewModel(
     private val _selectedNpuDeviceId = MutableStateFlow<String?>(null)
     val selectedNpuDeviceId: StateFlow<String?> = _selectedNpuDeviceId.asStateFlow()
 
-    private val _contextUsageFraction = MutableStateFlow(0f)
-    val contextUsageFraction: StateFlow<Float> = _contextUsageFraction.asStateFlow()
-    private val _contextUsageLabel = MutableStateFlow("0%")
-    val contextUsageLabel: StateFlow<String> = _contextUsageLabel.asStateFlow()
+    private val _pendingContextSize = MutableStateFlow(0)
 
-    private val prefs = context.getSharedPreferences("github_agent_prefs", Context.MODE_PRIVATE)
+    private val _contextUsageState = combine(_messages, _currentChatInput, _currentlyLoadedModel, _selectedModel, _pendingContextSize) { msgs, input, curModel, selModel, pending ->
+        val model = curModel ?: selModel
+        val maxTokens = model?.contextWindowSize?.coerceAtLeast(1) ?: 2048
+        
+        val historyChars = msgs.sumOf { it.content.length }
+        val inputChars = input.length
+        val baseSystemOverhead = 2500 
+        val tagChars = estimateTagContentSize(listOf(input))
+        
+        val committedChars = historyChars + inputChars + baseSystemOverhead + tagChars
+        val totalChars = committedChars + pending
+        
+        val committedTokens = (committedChars / 3.0).toInt().coerceAtLeast(0)
+        val totalTokens = (totalChars / 3.0).toInt().coerceAtLeast(0)
+        
+        val committedFraction = (committedTokens.toFloat() / maxTokens.toFloat()).coerceIn(0f, 1f)
+        val totalFraction = (totalTokens.toFloat() / maxTokens.toFloat()).coerceIn(0f, 1f)
+        
+        Triple(committedFraction, totalFraction, "${(totalFraction * 100).toInt()}%")
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, Triple(0f, 0f, "0%"))
+
+    val contextUsageFraction = _contextUsageState.flowMap { it.second }.stateIn(viewModelScope, SharingStarted.Eagerly, 0f)
+    val committedUsageFraction = _contextUsageState.flowMap { it.first }.stateIn(viewModelScope, SharingStarted.Eagerly, 0f)
+    val contextUsageLabel = _contextUsageState.flowMap { it.third }.stateIn(viewModelScope, SharingStarted.Eagerly, "0%")
+
+    private fun estimateTagContentSize(texts: List<String>): Int {
+        var estimatedSize = 0
+        val fileRegex = Regex("\\[FILE:(.*?)\\]")
+        val repo = _currentProject.value ?: return 0
+        
+        texts.forEach { text ->
+            fileRegex.findAll(text).forEach { match ->
+                val path = match.groupValues[1]
+                val file = File(context.filesDir, "github_projects/${repo.name}/$path")
+                if (file.exists()) {
+                    // Truncate estimation to our safety limit of 10,000 chars
+                    estimatedSize += file.length().toInt().coerceAtMost(10000)
+                }
+            }
+        }
+        return estimatedSize
+    }
+
+    private val _isProjectStructureVisible = MutableStateFlow(false)
+    val isProjectStructureVisible: StateFlow<Boolean> = _isProjectStructureVisible.asStateFlow()
+
+    private val _isCodeViewingVisible = MutableStateFlow(false)
+    val isCodeViewingVisible: StateFlow<Boolean> = _isCodeViewingVisible.asStateFlow()
+
+    private val _selectedFilePath = MutableStateFlow<String?>(null)
+    val selectedFilePath: StateFlow<String?> = _selectedFilePath.asStateFlow()
+
+    private val _viewedFileContent = MutableStateFlow<String?>(null)
+    val viewedFileContent: StateFlow<String?> = _viewedFileContent.asStateFlow()
+
+    private val _expandedFolders = MutableStateFlow<Set<String>>(emptySet())
+    val expandedFolders: StateFlow<Set<String>> = _expandedFolders.asStateFlow()
+
+    private val _isEditingMode = MutableStateFlow(false)
+    val isEditingMode: StateFlow<Boolean> = _isEditingMode.asStateFlow()
+
+    private val _editorText = MutableStateFlow("")
+    val editorText: StateFlow<String> = _editorText.asStateFlow()
+
+    data class ErrorMarker(val lineNumber: Int, val message: String)
+    private val _errorMarkers = MutableStateFlow<List<ErrorMarker>>(emptyList())
+    val errorMarkers: StateFlow<List<ErrorMarker>> = _errorMarkers.asStateFlow()
+
+    private val _isCheckingErrors = MutableStateFlow(false)
+    val isCheckingErrors: StateFlow<Boolean> = _isCheckingErrors.asStateFlow()
+
+    private val _editorSettings = MutableStateFlow(loadEditorSettings())
+    val editorSettings: StateFlow<com.llmhub.llmhub.utils.EditorSettings> = _editorSettings.asStateFlow()
+
 
     init {
         scanLocalRepos()
@@ -100,7 +182,6 @@ class GitHubAgentViewModel(
         restoreLastProject()
         refreshModels()
         syncCurrentlyLoadedModel()
-        recalculateContextUsage()
     }
 
     fun refreshModels() {
@@ -141,7 +222,6 @@ class GitHubAgentViewModel(
                 val success = inferenceService.loadModel(model, backend, disableVision, disableAudio, deviceId)
                 if (success) {
                     _currentlyLoadedModel.value = model
-                    recalculateContextUsage()
                 }
             } finally {
                 _isLoadingModel.value = false
@@ -162,7 +242,6 @@ class GitHubAgentViewModel(
         viewModelScope.launch {
             inferenceService.unloadModel()
             _currentlyLoadedModel.value = null
-            recalculateContextUsage()
         }
     }
 
@@ -332,13 +411,24 @@ class GitHubAgentViewModel(
 
     fun readFile(path: String): String? {
         val repo = _currentProject.value ?: return null
-        val file = java.io.File(context.filesDir, "github_projects/${repo.name}/$path")
-        return if (file.exists()) file.readText() else null
+        val normalizedPath = path.removePrefix("/")
+        val file = java.io.File(context.filesDir, "github_projects/${repo.name}/$normalizedPath")
+        return if (file.exists() && file.isFile) file.readText() else null
+    }
+
+    fun listFiles(path: String): List<String>? {
+        val repo = _currentProject.value ?: return null
+        val normalizedPath = path.removePrefix("/")
+        val dir = java.io.File(context.filesDir, "github_projects/${repo.name}/$normalizedPath")
+        return if (dir.exists() && dir.isDirectory) {
+            dir.listFiles()?.map { if (it.isDirectory) "${it.name}/" else it.name }
+        } else null
     }
 
     fun writeFile(path: String, content: String): Boolean {
         val repo = _currentProject.value ?: return false
-        val file = java.io.File(context.filesDir, "github_projects/${repo.name}/$path")
+        val normalizedPath = path.removePrefix("/")
+        val file = java.io.File(context.filesDir, "github_projects/${repo.name}/$normalizedPath")
         return try {
             file.parentFile?.mkdirs()
             file.writeText(content)
@@ -360,45 +450,312 @@ class GitHubAgentViewModel(
         }
     }
 
+    fun setChatInput(text: String) {
+        _currentChatInput.value = text
+    }
+
+    fun showProjectStructure() {
+        _isProjectStructureVisible.value = true
+    }
+
+    fun hideProjectStructure() {
+        _isProjectStructureVisible.value = false
+        _isCodeViewingVisible.value = false
+    }
+
+    fun toggleFolder(path: String) {
+        val current = _expandedFolders.value
+        if (current.contains(path)) {
+            _expandedFolders.value = current - path
+        } else {
+            _expandedFolders.value = current + path
+        }
+    }
+
+    fun openFile(path: String) {
+        _selectedFilePath.value = path
+        _viewedFileContent.value = readFile(path)
+        _isCodeViewingVisible.value = true
+    }
+
+    fun closeFile() {
+        _isCodeViewingVisible.value = false
+        _isEditingMode.value = false
+        _selectedFilePath.value = null
+        _viewedFileContent.value = null
+        _editorText.value = ""
+        _errorMarkers.value = emptyList()
+    }
+
+    fun toggleEditMode() {
+        if (!_isEditingMode.value) {
+            _editorText.value = _viewedFileContent.value ?: ""
+            _errorMarkers.value = emptyList()
+        }
+        _isEditingMode.value = !_isEditingMode.value
+    }
+
+    private var autoAnalysisJob: kotlinx.coroutines.Job? = null
+
+    fun onEditorTextChange(newText: String) {
+        _editorText.value = newText
+        
+        // Auto-analysis debounce
+        if (_editorSettings.value.isAutoAnalysisEnabled) {
+            autoAnalysisJob?.cancel()
+            autoAnalysisJob = viewModelScope.launch {
+                kotlinx.coroutines.delay(2500) // 2.5 second debounce
+                checkCodeForErrors(isManual = false)
+            }
+        }
+    }
+
+    fun saveEditedFile() {
+        val path = _selectedFilePath.value ?: return
+        val content = _editorText.value
+        if (writeFile(path, content)) {
+            _viewedFileContent.value = content
+            _isEditingMode.value = false
+            // Also notify RAG if needed, but for now we just persist
+        }
+    }
+
+    fun checkCodeForErrors(isManual: Boolean = true) {
+        val path = _selectedFilePath.value ?: return
+        val content = _editorText.value
+        val model = _currentlyLoadedModel.value
+        val extension = path.substringAfterLast(".", "")
+
+        // 1. Local Syntax Check (Fast)
+        val checker = com.llmhub.llmhub.utils.LocalSyntaxChecker()
+        val localErrors = checker.check(content, extension)
+        
+        if (isManual) {
+            // Manual check always clears and shows progress
+            _isCheckingErrors.value = true
+            _errorMarkers.value = localErrors 
+        } else if (localErrors.isNotEmpty()) {
+            // Background check: only update if local errors found
+            _errorMarkers.value = localErrors
+        }
+
+        if (model == null) {
+            if (isManual) {
+                _errorMarkers.value = localErrors + ErrorMarker(1, "Please load an AI model to check for deeper errors.")
+                _isCheckingErrors.value = false
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            if (isManual) _isCheckingErrors.value = true
+            _errorMarkers.value = emptyList() // Clear old errors
+            val lines = content.lines()
+            val chunkedContent = if (lines.size > 200) {
+                // Windowing: first 200 lines for now (simplified chunking)
+                lines.take(200).joinToString("\n") + "\n... (remaining ${lines.size - 200} lines skipped for speed)"
+            } else {
+                content
+            }
+
+            val prompt = """
+                EXPERT CODE ANALYZER (L: $extension)
+                Find bugs/syntax errors.
+                Respond ONLY JSON [ { "line": INT, "message": "STR" } ].
+                No explanation. [] if clean.
+                
+                CODE:
+                $chunkedContent
+            """.trimIndent()
+            
+            val response = try {
+                inferenceService.generateResponse(prompt, model)
+            } catch (e: Exception) {
+                null
+            }
+
+            try {
+                val jsonArray = Json.parseToJsonElement(response ?: "[]").jsonArray
+                val aiMarkers = jsonArray.map { element ->
+                    val obj = element.jsonObject
+                    ErrorMarker(
+                        obj["line"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1,
+                        obj["message"]?.jsonPrimitive?.content ?: "Error"
+                    )
+                }
+                // Merge local and AI errors, avoiding duplicates
+                val combined = (localErrors + aiMarkers).distinctBy { "${it.lineNumber}:${it.message}" }
+                _errorMarkers.value = combined
+            } catch (e: Exception) {
+                android.util.Log.e("GitHubAgentViewModel", "Failed to parse error markers: $response", e)
+                if (isManual) _errorMarkers.value = localErrors
+            }
+            _isCheckingErrors.value = false
+        }
+    }
+
+    private fun loadEditorSettings(): com.llmhub.llmhub.utils.EditorSettings {
+        val useTab = prefs.getBoolean("editor_use_tab_helper", true)
+        val themeName = prefs.getString("editor_theme_name", com.llmhub.llmhub.utils.EditorThemeName.MONOKAI.name) ?: com.llmhub.llmhub.utils.EditorThemeName.MONOKAI.name
+        val isAutoAnalysis = prefs.getBoolean("editor_auto_analysis", false)
+        return com.llmhub.llmhub.utils.EditorSettings(
+            useTabHelper = useTab,
+            themeName = com.llmhub.llmhub.utils.EditorThemeName.valueOf(themeName),
+            isAutoAnalysisEnabled = isAutoAnalysis
+        )
+    }
+
+    fun updateEditorSettings(settings: com.llmhub.llmhub.utils.EditorSettings) {
+        _editorSettings.value = settings
+        prefs.edit()
+            .putBoolean("editor_use_tab_helper", settings.useTabHelper)
+            .putString("editor_theme_name", settings.themeName.name)
+            .putBoolean("editor_auto_analysis", settings.isAutoAnalysisEnabled)
+            .apply()
+    }
+
+    fun addFileToContext(path: String) {
+        val tag = "[FILE:$path]"
+        appendToChatInput(tag)
+    }
+
+    fun addLineToContext(path: String, lineNumber: Int) {
+        val tag = "[LINE:$path:$lineNumber]"
+        appendToChatInput(tag)
+    }
+
+    private fun appendToChatInput(text: String) {
+        val currentText = _currentChatInput.value
+        val separator = if (currentText.isEmpty() || currentText.endsWith(" ")) "" else " "
+        _currentChatInput.value = currentText + separator + text + " "
+    }
+
+    private fun formatFileShorthand(path: String): String {
+        val fileName = path.substringAfterLast("/")
+        val dotIndex = fileName.lastIndexOf(".")
+        if (dotIndex <= 0) return fileName // No extension
+
+        val name = fileName.substring(0, dotIndex)
+        val ext = fileName.substring(dotIndex)
+
+        return if (name.length > 4) {
+            "${name.take(3)}...${name.last()}$ext"
+        } else {
+            fileName
+        }
+    }
+
+    private fun formatLineShorthand(path: String, lineNumber: Int): String {
+        return "${formatFileShorthand(path)}:${lineNumber}"
+    }
+
     fun sendMessage(text: String) {
         val userMsg = ChatMessage(role = "user", content = text)
         _messages.value = _messages.value + userMsg
 
         viewModelScope.launch {
             _isLoading.value = true
-            recalculateContextUsage()
             processAgentTurn()
             _isLoading.value = false
-            recalculateContextUsage()
         }
     }
 
     private suspend fun processAgentTurn() {
         val repo = _currentProject.value ?: return
+        val rootFiles = listFiles("")?.joinToString(", ") ?: "unknown"
         val systemPrompt = """
             You are a GitHub Agent, an expert software engineer operating on a mobile device.
             You have access to a local clone of a GitHub repository.
             Current project: ${repo.name}
+            Project root contents: $rootFiles
 
-            You can use the following tools to fulfill the user's request:
+            You can use the following tools:
             - SEARCH: Query the RAG index to find relevant code snippets. 
               Format: {"action": "search", "query": "search term"}
+            - LIST_FILES: List files in a directory. 
+              Format: {"action": "list_files", "path": "relative/path"}
             - READ_FILE: Read the content of a file. 
-              Format: {"action": "read_file", "path": "relative/path/to/file"}
-            - WRITE_FILE: Overwrite or create a file with new content. 
+              Format: {"action": "read_file", "path": "path/to/file"}
+            - WRITE_FILE: Overwrite or create a file. 
               Format: {"action": "write_file", "path": "path", "content": "code..."}
-            - FINISH: Signal that you have completed the task or need user input. 
-              Format: {"action": "finish", "message": "your response to user"}
+            - FINISH: Respond to the user. 
+              Format: {"action": "finish", "message": "your response"}
 
             Rules:
             1. ALWAYS respond with a SINGLE valid JSON object.
-            2. For complex tasks, start by SEARCHing for relevant files.
-            3. Use READ_FILE to understand the code before making changes.
-            4. Keep responses concise and focused on the task.
+            2. MANDATORY: Your FIRST action for any new project MUST be listing the root directory: {"action": "list_files", "path": ""}
+            3. Do NOT guess file paths. If you are unsure of a path, use LIST_FILES to explore.
+            4. Use SEARCH to find code based on keywords, then use LIST_FILES and READ_FILE to navigate.
+            
+            NOTE: If the user provides a tag like [FILE:path] or [LINE:path:num], the system will automatically provide the content of that file or line in the subsequent system messages.
         """.trimIndent()
 
         var loop = true
         var iteration = 0
+        
+        // Pre-process user message for file/line tags and inject context
+        val lastUserMsg = _messages.value.lastOrNull { it.role == "user" }
+        if (lastUserMsg != null) {
+            val fileRegex = Regex("\\[FILE:(.*?)\\]")
+            val lineRegex = Regex("\\[LINE:(.*?):(\\d+)\\]")
+            
+            fileRegex.findAll(lastUserMsg.content).forEach { match ->
+                val path = match.groupValues[1]
+                val file = File(context.filesDir, "github_projects/${_currentProject.value?.name}/$path")
+                if (file.exists()) {
+                    _pendingContextSize.value += file.length().toInt().coerceAtMost(10000)
+                }
+                
+                var content = readFile(path)
+                if (content != null) {
+                    if (content.length > 10000) {
+                        content = content.take(10000) + "\n\n[TRUNCATED: File exceeds 10,000 chars and was partially omitted for stability]"
+                    }
+                    addSystemContext("Content of referenced file '$path':\n$content")
+                    _pendingContextSize.value = (_pendingContextSize.value - 10000).coerceAtLeast(0) // Rough reset, but we'll do a full reset later
+                    
+                    // Add dependency signatures context
+                    try {
+                        val repo = _currentProject.value
+                        if (repo != null) {
+                            val projectRoot = File(context.filesDir, "github_projects/${repo.name}")
+                            val analyzer = com.llmhub.llmhub.utils.DependencyAnalyzer(projectRoot)
+                            val extension = path.substringAfterLast(".", "")
+                            
+                            // Estimate dependency context size (usually around 1-5k chars)
+                            _pendingContextSize.value += 2000 
+                            
+                            var depContext = analyzer.getDependencyContext(content, extension)
+                            if (depContext.isNotBlank()) {
+                                if (depContext.length > 5000) {
+                                    depContext = depContext.take(5000) + "\n\n[TRUNCATED: Dependency context too large]"
+                                }
+                                addSystemContext("Summarized signatures of Level-1 dependencies for '$path':\n$depContext")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w("GitHubAgentViewModel", "Failed to analyze dependencies: ${e.message}")
+                    } finally {
+                        _pendingContextSize.value = 0 // Full reset for safety
+                    }
+                }
+            }
+            
+            lineRegex.findAll(lastUserMsg.content).forEach { match ->
+                val path = match.groupValues[1]
+                val lineNum = match.groupValues[2].toIntOrNull() ?: 1
+                
+                _pendingContextSize.value += 200 // Estimate for a single line
+                val fileContent = readFile(path)
+                if (fileContent != null) {
+                    val lines = fileContent.lines()
+                    val lineText = lines.getOrNull(lineNum - 1) ?: "Line not found"
+                    addSystemContext("Content of referenced line $lineNum in '$path':\n$lineText")
+                }
+                _pendingContextSize.value = 0
+            }
+        }
+
         while (loop && iteration < 5) {
             iteration++
             val prompt = buildPrompt(systemPrompt)
@@ -408,28 +765,56 @@ class GitHubAgentViewModel(
                 loop = false
                 break
             }
+            
+            // Context Window Safety Guard
+            val estimatedTokens = (prompt.length / 3.0).toInt()
+            if (estimatedTokens > (model.contextWindowSize - 100)) {
+                addSystemContext("⚠️ CONTEXT OVERFLOW WARNING: The current prompt ($estimatedTokens tokens) approaches or exceeds the model limit (${model.contextWindowSize}). Some history was omitted.")
+                // Potentially truncate history further if buildPrompt doesn't handle it
+            }
+
             val response = inferenceService.generateResponse(prompt, model) ?: "{\"action\": \"finish\", \"message\": \"I encountered an error.\"}"
             
             try {
-                val json = kotlinx.serialization.json.Json.parseToJsonElement(response).asJsonObject()
+                val cleanResponse = extractFirstJsonObject(response)
+                val json = kotlinx.serialization.json.Json.parseToJsonElement(cleanResponse).asJsonObject()
                 val action = json["action"]?.asString()
                 
                 when (action) {
                     "search" -> {
                         val query = json["query"]?.asString() ?: ""
+                        _pendingContextSize.value += 5000 // Average search result estimate
                         val results = ragManager.searchGlobalContext(query, maxResults = 5, metadataFilter = "github_project:${repo.name}")
                         val context = results.joinToString("\n\n") { "File: ${it.fileName}\n${it.content}" }
+                        _pendingContextSize.value = 0
                         addAgentMessage("Searching for '$query'...\nFound relevant snippets.")
                         addSystemContext("Search results for '$query':\n$context")
                     }
+                    "list_files" -> {
+                        val path = json["path"]?.asString() ?: ""
+                        _pendingContextSize.value += 500
+                        val files = listFiles(path)
+                        _pendingContextSize.value = 0
+                        if (files != null) {
+                            addAgentMessage("Listing files in: ${if (path.isEmpty()) "root" else path}")
+                            addSystemContext("Files in $path:\n${files.joinToString("\n")}")
+                        } else {
+                            addSystemContext("Error: Directory $path not found.")
+                        }
+                    }
                     "read_file" -> {
                         val path = json["path"]?.asString() ?: ""
+                        val file = File(context.filesDir, "github_projects/${repo.name}/$path")
+                        if (file.exists()) {
+                            _pendingContextSize.value += file.length().toInt().coerceAtMost(10000)
+                        }
                         val content = readFile(path)
+                        _pendingContextSize.value = 0
                         if (content != null) {
                             addAgentMessage("Reading file: $path")
                             addSystemContext("Content of $path:\n$content")
                         } else {
-                            addSystemContext("Error: File $path not found.")
+                            addSystemContext("Error: File $path not found. Use LIST_FILES to find the correct path.")
                         }
                     }
                     "write_file" -> {
@@ -457,8 +842,26 @@ class GitHubAgentViewModel(
     }
 
     private fun buildPrompt(system: String): String {
-        val lastMsgs = _messages.value.takeLast(10)
-        val history = lastMsgs.joinToString("\n") { (role, content) -> "$role: $content" }
+        val model = _currentlyLoadedModel.value ?: _selectedModel.value ?: return system
+        val maxTokens = model.contextWindowSize
+        val safetyBuffer = 500
+        val targetTokens = maxTokens - safetyBuffer
+        
+        val reversedMsgs = _messages.value.reversed()
+        val includedMsgs = mutableListOf<ChatMessage>()
+        var currentTokenEst = (system.length / 3.0).toInt()
+        
+        for (msg in reversedMsgs) {
+            val msgTokens = (msg.content.length / 3.0).toInt() + 10 // overhead per msg
+            if (currentTokenEst + msgTokens <= targetTokens) {
+                includedMsgs.add(0, msg)
+                currentTokenEst += msgTokens
+            } else {
+                break 
+            }
+        }
+        
+        val history = includedMsgs.joinToString("\n") { (role, content) -> "$role: $content" }
         return "$system\n\n$history\nassistant:"
     }
 
@@ -470,9 +873,23 @@ class GitHubAgentViewModel(
         _messages.value = _messages.value + ChatMessage(role = "system", content = text)
     }
 
-    private fun kotlinx.serialization.json.JsonElement.asJsonObject() = this as? kotlinx.serialization.json.JsonObject ?: throw Exception("Not an object")
-    private fun kotlinx.serialization.json.JsonElement.asString() = (this as? kotlinx.serialization.json.JsonPrimitive)?.content ?: ""
-    private fun kotlinx.serialization.json.JsonObject.get(key: String) = this[key]
+
+    private fun extractFirstJsonObject(text: String): String {
+        var depth = 0
+        var start = -1
+        for (i in text.indices) {
+            if (text[i] == '{') {
+                if (depth == 0) start = i
+                depth++
+            } else if (text[i] == '}') {
+                depth--
+                if (depth == 0 && start != -1) {
+                    return text.substring(start, i + 1)
+                }
+            }
+        }
+        return text
+    }
 
     fun logout() {
         authManager.clearToken()
@@ -484,18 +901,6 @@ class GitHubAgentViewModel(
         _currentProject.value = null
         _messages.value = emptyList()
         _isChatActive.value = false
-        recalculateContextUsage()
     }
 
-    private fun recalculateContextUsage() {
-        val model = _currentlyLoadedModel.value ?: _selectedModel.value
-        val maxTokens = model?.contextWindowSize?.coerceAtLeast(1) ?: 4096
-        
-        val usedChars = _messages.value.sumOf { it.content.length }
-        val usedTokens = (usedChars / 4).coerceAtLeast(0)
-        
-        val fraction = (usedTokens.toFloat() / maxTokens.toFloat()).coerceIn(0f, 1f)
-        _contextUsageFraction.value = fraction
-        _contextUsageLabel.value = "${(fraction * 100).toInt()}%"
-    }
 }

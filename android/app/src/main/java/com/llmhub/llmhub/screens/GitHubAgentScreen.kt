@@ -2,7 +2,6 @@ package com.llmhub.llmhub.screens
 
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -38,8 +37,24 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import com.llmhub.llmhub.R
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import com.llmhub.llmhub.utils.SyntaxHighlighter
+import com.llmhub.llmhub.utils.EditorTheme
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun GitHubAgentScreen(
     onNavigateBack: () -> Unit,
@@ -69,7 +84,15 @@ fun GitHubAgentScreen(
     val selectedNpuDeviceId by viewModel.selectedNpuDeviceId.collectAsState()
 
     val contextUsageFraction by viewModel.contextUsageFraction.collectAsState()
+    val committedUsageFraction by viewModel.committedUsageFraction.collectAsState()
     val contextUsageLabel by viewModel.contextUsageLabel.collectAsState()
+
+    val isProjectStructureVisible by viewModel.isProjectStructureVisible.collectAsState()
+    val isCodeViewingVisible by viewModel.isCodeViewingVisible.collectAsState()
+    val selectedFilePath by viewModel.selectedFilePath.collectAsState()
+    val viewedFileContent by viewModel.viewedFileContent.collectAsState()
+    val expandedFolders by viewModel.expandedFolders.collectAsState()
+    val currentChatInput by viewModel.currentChatInput.collectAsState()
 
     var showSettingsSheet by remember { mutableStateOf(false) }
     var showContextHint by remember { mutableStateOf(false) }
@@ -105,6 +128,11 @@ fun GitHubAgentScreen(
                     }
                 },
                 actions = {
+                    if (currentProject != null) {
+                        IconButton(onClick = { viewModel.showProjectStructure() }) {
+                            Icon(Icons.Default.AccountTree, contentDescription = "Project Structure")
+                        }
+                    }
                     if (isChatActive) {
                         Box(
                             contentAlignment = Alignment.Center,
@@ -114,7 +142,14 @@ fun GitHubAgentScreen(
                                 .clickable { showContextHint = true }
                         ) {
                             CircularProgressIndicator(
-                                progress = contextUsageFraction,
+                                progress = { contextUsageFraction },
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant
+                            )
+                            CircularProgressIndicator(
+                                progress = { committedUsageFraction },
                                 modifier = Modifier.size(24.dp),
                                 strokeWidth = 2.dp,
                                 color = MaterialTheme.colorScheme.primary
@@ -133,14 +168,13 @@ fun GitHubAgentScreen(
                 }
             )
         }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
+    ) { paddingValues ->
+        Box(modifier = Modifier.padding(paddingValues = paddingValues).fillMaxSize()) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
             when (authState) {
                 GitHubAuthState.Idle -> {
                     CircularProgressIndicator()
@@ -170,7 +204,7 @@ fun GitHubAgentScreen(
                     Button(
                         onClick = onNavigateToAuth,
                         modifier = Modifier.fillMaxWidth(0.7f),
-                        contentPadding = PaddingValues(16.dp)
+                        contentPadding = PaddingValues(all = 16.dp)
                     ) {
                         Icon(rememberGithubIcon(), contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
@@ -217,7 +251,7 @@ fun GitHubAgentScreen(
                     } else {
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(16.dp),
+                            contentPadding = PaddingValues(all = 16.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             // User Profile Header
@@ -272,6 +306,43 @@ fun GitHubAgentScreen(
             }
         }
 
+        // Project Structure Overlay
+        if (isProjectStructureVisible) {
+            ProjectStructureOverlay(
+                viewModel = viewModel,
+                expandedFolders = expandedFolders,
+                onClose = { viewModel.hideProjectStructure() }
+            )
+        }
+
+        // Code Viewer/Editor Overlay
+        if (isCodeViewingVisible && selectedFilePath != null) {
+            val isEditingMode by viewModel.isEditingMode.collectAsState()
+            val editorText by viewModel.editorText.collectAsState()
+            val editorSettings by viewModel.editorSettings.collectAsState()
+            val errorMarkers by viewModel.errorMarkers.collectAsState()
+            val isCheckingErrors by viewModel.isCheckingErrors.collectAsState()
+            
+            CodeEditorOverlay(
+                path = selectedFilePath!!,
+                content = viewedFileContent ?: "",
+                isEditing = isEditingMode,
+                editorText = editorText,
+                editorSettings = editorSettings,
+                errorMarkers = errorMarkers,
+                isCheckingErrors = isCheckingErrors,
+                onClose = { viewModel.closeFile() },
+                onToggleEdit = { viewModel.toggleEditMode() },
+                onTextChange = { viewModel.onEditorTextChange(it) },
+                onSave = { viewModel.saveEditedFile() },
+                onCheckErrors = { viewModel.checkCodeForErrors() },
+                onAddContext = { line -> 
+                    line?.let { viewModel.addLineToContext(selectedFilePath!!, it) }
+                        ?: viewModel.addFileToContext(selectedFilePath!!)
+                }
+            )
+        }
+
         if (showSettingsSheet) {
             ChatSettingsSheet(
                 availableModels = availableModels,
@@ -314,6 +385,7 @@ fun GitHubAgentScreen(
         }
     }
 }
+}
 
 @Composable
 fun ProjectView(
@@ -328,7 +400,7 @@ fun ProjectView(
     status: String?
 ) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(all = 16.dp),
         horizontalAlignment = Alignment.Start
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -355,7 +427,7 @@ fun ProjectView(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp)
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(all = 16.dp)) {
                 Text("Project Status", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(8.dp))
                 
@@ -442,7 +514,7 @@ fun ChatView(
     onNavigateToModels: () -> Unit,
     viewModel: GitHubAgentViewModel
 ) {
-    var inputText by remember { mutableStateOf("") }
+    val currentChatInput by viewModel.currentChatInput.collectAsState()
     
     Column(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
@@ -472,7 +544,7 @@ fun ChatView(
             }
             if (isLoading) {
                 item {
-                    Box(modifier = Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.CenterStart) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(all = 8.dp), contentAlignment = Alignment.CenterStart) {
                         CircularProgressIndicator(modifier = Modifier.size(24.dp))
                     }
                 }
@@ -484,13 +556,12 @@ fun ChatView(
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
-                modifier = Modifier.padding(8.dp),
+                modifier = Modifier.padding(all = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                var text by remember { mutableStateOf("") }
                 TextField(
-                    value = text,
-                    onValueChange = { text = it },
+                    value = currentChatInput,
+                    onValueChange = { viewModel.setChatInput(it) },
                     modifier = Modifier.weight(1f),
                     placeholder = { Text("Ask something about the code...") },
                     maxLines = 4,
@@ -501,14 +572,465 @@ fun ChatView(
                 )
                 IconButton(
                     onClick = {
-                        if (text.isNotBlank()) {
-                            onSendMessage(text)
-                            text = ""
+                        if (currentChatInput.isNotBlank()) {
+                            onSendMessage(currentChatInput)
+                            viewModel.setChatInput("")
                         }
                     },
                     enabled = !isLoading
                 ) {
                     Icon(Icons.Default.Send, contentDescription = "Send")
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ProjectStructureOverlay(
+    viewModel: GitHubAgentViewModel,
+    expandedFolders: Set<String>,
+    onClose: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            TopAppBar(
+                title = { Text("Project Structure") },
+                navigationIcon = {
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Default.Close, contentDescription = "Close")
+                    }
+                }
+            )
+            
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(all = 16.dp)
+            ) {
+                item {
+                    FileTreeItem(
+                        path = "",
+                        name = "root",
+                        isDir = true,
+                        level = 0,
+                        expandedFolders = expandedFolders,
+                        viewModel = viewModel
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@Composable
+fun FileTreeItem(
+    path: String,
+    name: String,
+    isDir: Boolean,
+    level: Int,
+    expandedFolders: Set<String>,
+    viewModel: GitHubAgentViewModel
+) {
+    val isExpanded = expandedFolders.contains(path)
+    var showMenu by remember { mutableStateOf(false) }
+
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = (level * 16).dp)
+                .clickable(
+                    onClick = {
+                        if (isDir) {
+                            viewModel.toggleFolder(path)
+                        } else {
+                            viewModel.openFile(path)
+                        }
+                    }
+                )
+                .combinedClickable(
+                    onClick = {
+                        if (isDir) viewModel.toggleFolder(path)
+                        else viewModel.openFile(path)
+                    },
+                    onLongClick = {
+                        if (!isDir) showMenu = true
+                    }
+                )
+                .padding(vertical = 8.dp, horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = if (isDir) {
+                    if (isExpanded) Icons.Default.FolderOpen else Icons.Default.Folder
+                } else {
+                    Icons.Default.Description
+                },
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = if (isDir) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = name,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            if (showMenu) {
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Add to chat for context") },
+                        onClick = {
+                            viewModel.addFileToContext(path)
+                            showMenu = false
+                        },
+                        leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Open for editing") },
+                        onClick = {
+                            // TODO: Implement simple editing or just open for now
+                            viewModel.openFile(path)
+                            showMenu = false
+                        },
+                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) }
+                    )
+                }
+            }
+        }
+
+        if (isDir && isExpanded) {
+            val children = viewModel.listFiles(path) ?: emptyList()
+            children.forEach { childName ->
+                val childIsDir = childName.endsWith("/")
+                val cleanChildName = childName.removeSuffix("/")
+                val childPath = if (path.isEmpty()) cleanChildName else "$path/$cleanChildName"
+                FileTreeItem(
+                    path = childPath,
+                    name = cleanChildName,
+                    isDir = childIsDir,
+                    level = level + 1,
+                    expandedFolders = expandedFolders,
+                    viewModel = viewModel
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@Composable
+fun CodeEditorOverlay(
+    path: String,
+    content: String,
+    isEditing: Boolean,
+    editorText: String,
+    editorSettings: com.llmhub.llmhub.utils.EditorSettings,
+    errorMarkers: List<GitHubAgentViewModel.ErrorMarker>,
+    isCheckingErrors: Boolean,
+    onClose: () -> Unit,
+    onToggleEdit: () -> Unit,
+    onTextChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onCheckErrors: () -> Unit,
+    onAddContext: (Int?) -> Unit
+) {
+    val theme = EditorTheme.getByName(editorSettings.themeName.name)
+    val extension = path.substringAfterLast(".")
+    val highlighter = remember(theme, extension) { SyntaxHighlighter(theme) }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = theme.background
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            TopAppBar(
+                title = { 
+                    Column {
+                        Text(
+                            text = path.substringAfterLast("/"),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = theme.text
+                        )
+                        if (isEditing) {
+                            Text(
+                                "Editing Mode", 
+                                style = MaterialTheme.typography.labelSmall,
+                                color = theme.keyword
+                            )
+                        }
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = theme.text)
+                    }
+                },
+                actions = {
+                    if (isEditing) {
+                        IconButton(onClick = onCheckErrors) {
+                            Icon(Icons.Default.BugReport, contentDescription = "Check for Bugs", tint = theme.keyword)
+                        }
+                        IconButton(onClick = onSave) {
+                            Icon(Icons.Default.Save, contentDescription = "Save", tint = theme.string)
+                        }
+                    }
+                    IconButton(onClick = onToggleEdit) {
+                        Icon(
+                            if (isEditing) Icons.Default.Visibility else Icons.Default.Edit,
+                            contentDescription = "Toggle Edit Mode",
+                            tint = theme.text
+                        )
+                    }
+                    if (!isEditing) {
+                        IconButton(onClick = { onAddContext(null) }) {
+                            Icon(Icons.Default.Add, contentDescription = "Add whole file to context", tint = theme.text)
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = theme.background.copy(alpha = 0.9f),
+                    titleContentColor = theme.text
+                )
+            )
+
+            if (isCheckingErrors) {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth().height(2.dp),
+                    color = theme.keyword,
+                    trackColor = theme.background
+                )
+            }
+
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                if (isEditing) {
+                    val scrollState = rememberScrollState()
+                    val hScrollState = rememberScrollState()
+                    
+                    // Controlled text field value for cursor placement and navigation
+                    var textFieldValue by remember(content) {
+                        mutableStateOf(TextFieldValue(content))
+                    }
+                    
+                    // Effect to handle navigation to specific lines (e.g., from error list)
+                    var targetLineToFocus by remember { mutableStateOf<Int?>(null) }
+                    
+                    // Auto-focus first error once analysis completes and window is open
+                    LaunchedEffect(errorMarkers, isCheckingErrors) {
+                        if (!isCheckingErrors && errorMarkers.isNotEmpty() && targetLineToFocus == null) {
+                            targetLineToFocus = errorMarkers.first().lineNumber
+                        }
+                    }
+                    
+                    LaunchedEffect(targetLineToFocus) {
+                        targetLineToFocus?.let { line ->
+                            val lines = textFieldValue.text.lines()
+                            if (line >= 1 && line <= lines.size) {
+                                // 1. Calculate character offset for cursor
+                                var offset = 0
+                                for (i in 0 until line - 1) {
+                                    offset += lines[i].length + 1 // +1 for \n
+                                }
+                                textFieldValue = textFieldValue.copy(
+                                    selection = androidx.compose.ui.text.TextRange(offset)
+                                )
+                                
+                                // 2. Animated scroll to the line
+                                // Estimation: line height (roughly 22dp for 14sp text)
+                                // We don't have direct access to line metrics in BasicTextField easily,
+                                // but we can approximate it for common mobile displays.
+                                val estimatedLineHeight = 19 * 2.5 // Approximate density conversion
+                                scrollState.animateScrollTo((line - 1) * estimatedLineHeight.toInt())
+                            }
+                            targetLineToFocus = null
+                        }
+                    }
+                    
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                            // Gutter (Line Numbers)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .width(44.dp)
+                                    .background(theme.background.copy(alpha = 0.5f))
+                                    .verticalScroll(scrollState)
+                                    .padding(vertical = 4.dp),
+                                horizontalAlignment = Alignment.End
+                            ) {
+                                val lineCount = textFieldValue.text.lines().size
+                                for (i in 1..lineCount) {
+                                    val isErrorLine = errorMarkers.any { it.lineNumber == i }
+                                    Text(
+                                        text = i.toString(),
+                                        style = TextStyle(
+                                            color = if (isErrorLine) theme.error else theme.comment.copy(alpha = 0.6f),
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 12.sp,
+                                            textAlign = TextAlign.End
+                                        ),
+                                        modifier = Modifier.padding(end = 8.dp, top = 2.dp, bottom = 2.dp)
+                                    )
+                                }
+                            }
+                            
+                            // Editor Area
+                            BasicTextField(
+                                value = textFieldValue,
+                                onValueChange = { 
+                                    textFieldValue = it
+                                    // Basic indentation assistance if enabled
+                                    if (editorSettings.useTabHelper && it.text.endsWith("\n") && it.text.length > content.length) {
+                                        val lines = it.text.split("\n")
+                                        if (lines.size > 1) {
+                                            val lastLine = lines[lines.size - 2]
+                                            val leadingSpaces = lastLine.takeWhile { it.isWhitespace() }
+                                            onTextChange(it.text + leadingSpaces)
+                                        } else {
+                                            onTextChange(it.text)
+                                        }
+                                    } else {
+                                        onTextChange(it.text)
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(horizontal = 2.dp, vertical = 4.dp)
+                                    .verticalScroll(scrollState)
+                                    .horizontalScroll(hScrollState),
+                                textStyle = TextStyle(
+                                    color = theme.text,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 14.sp,
+                                    lineHeight = 19.sp
+                                ),
+                                cursorBrush = SolidColor(theme.text),
+                                visualTransformation = { text ->
+                                    TransformedText(
+                                        highlighter.highlight(text.text, extension),
+                                        OffsetMapping.Identity
+                                    )
+                                }
+                            )
+                        }
+
+                        // Interactive Error List at the Bottom
+                        if (errorMarkers.isNotEmpty()) {
+                            GlassySurface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 160.dp)
+                                    .padding(all = 8.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(all = 12.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.BugReport, contentDescription = null, tint = theme.error, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Issues Found (${errorMarkers.size})", style = MaterialTheme.typography.titleSmall, color = theme.text)
+                                    }
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    LazyColumn {
+                                        items(errorMarkers) { error ->
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable { targetLineToFocus = error.lineNumber }
+                                                    .padding(vertical = 4.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(6.dp)
+                                                        .clip(CircleShape)
+                                                        .background(theme.error)
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = "Line ${error.lineNumber}: ",
+                                                    style = TextStyle(
+                                                        color = theme.keyword,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        fontSize = 12.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                )
+                                                Text(
+                                                    text = error.message,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = theme.text,
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    val lines = content.lines()
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize().background(theme.background)
+                    ) {
+                        itemsIndexed(lines) { index, line ->
+                            var showLineMenu by remember { mutableStateOf(false) }
+                            val isError = errorMarkers.any { it.lineNumber == index + 1 }
+                            
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .combinedClickable(
+                                        onClick = {},
+                                        onLongClick = { showLineMenu = true }
+                                    )
+                                    .background(if (isError) theme.error.copy(alpha = 0.15f) else Color.Transparent)
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = (index + 1).toString(),
+                                    modifier = Modifier.width(32.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (isError) theme.error else theme.comment,
+                                    textAlign = TextAlign.End
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = highlighter.highlight(line, extension),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = theme.text
+                                )
+                            }
+                            
+                            if (showLineMenu) {
+                                DropdownMenu(
+                                    expanded = showLineMenu,
+                                    onDismissRequest = { showLineMenu = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Add to chat for context (Line ${index + 1})") },
+                                        onClick = {
+                                            onAddContext(index + 1)
+                                            showLineMenu = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -533,7 +1055,7 @@ fun ChatMessageItem(msg: com.llmhub.llmhub.viewmodels.ChatMessage) {
         ) {
             Text(
                 text = msg.content,
-                modifier = Modifier.padding(12.dp),
+                modifier = Modifier.padding(all = 12.dp),
                 color = if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
@@ -547,7 +1069,7 @@ fun UserProfileHeader(user: com.llmhub.llmhub.services.GitHubUser, onLogout: () 
         cornerRadius = 16.dp
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(all = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             AsyncImage(
@@ -592,7 +1114,7 @@ fun RepositoryItem(repo: GitHubRepository, isCloned: Boolean, onClick: () -> Uni
                 MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         )
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(all = 16.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -663,12 +1185,12 @@ fun GitHubWelcomeMessage(
     hasDownloadedModels: Boolean
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().padding(16.dp),
+        modifier = Modifier.fillMaxWidth().padding(all = 16.dp),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f))
     ) {
         Column(
-            modifier = Modifier.padding(24.dp),
+            modifier = Modifier.padding(all = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
@@ -701,11 +1223,11 @@ fun GitHubModelLoadingIndicator(modelName: String) {
     )
     
     Card(
-        modifier = Modifier.fillMaxWidth().padding(16.dp).graphicsLayer(scaleX = scale, scaleY = scale),
+        modifier = Modifier.fillMaxWidth().padding(all = 16.dp).graphicsLayer(scaleX = scale, scaleY = scale),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f))
     ) {
-        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(modifier = Modifier.padding(all = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             CircularProgressIndicator(modifier = Modifier.size(24.dp))
             Spacer(modifier = Modifier.width(16.dp))
             Text("Loading $modelName...", style = MaterialTheme.typography.titleMedium)

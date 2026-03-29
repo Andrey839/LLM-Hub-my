@@ -109,6 +109,11 @@
     <!-- Navigation -->
     <string name="chat">Чат</string>
     <string name="models">Моделі</string>
+    <string name="code_editor">Редактор коду</string>
+    <string name="tab_helper">Помічник табуляції</string>
+    <string name="tab_helper_desc">Допоміжні відступи та поведінка клавіші Tab.</string>
+    <string name="editor_theme">Тема редактора</string>
+    <string name="editor_theme_desc">Кольорова схема підсвітки синтаксису.</string>
     <string name="settings">Налаштування</string>
     <string name="about">Про застосунок</string>
 
